@@ -1,2 +1,2 @@
 # findmydevicescanner
-A script that detects bluetooth broadcasting Apple devices and detects if they are "FindMy" devices.
+A script that detects bluetooth broadcasting Apple devices and shows if they are "FindMy" devices.

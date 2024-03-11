@@ -52,7 +52,7 @@ func main() {
 		fmt.Println("Devices found:")
 		clearScreen()
 		for k, v := range devices {
-			fmt.Printf("Device: %X, FindMyDevice: %v\n", k, isFindMyDevice(v[uint16(appleIdentifier)]))
+			fmt.Printf("Device: %X, FindMyDevice: %v\n", k, isFindMyDevice(v))
 		}
 		// Clear the devices map.
 		devices = make(trackingDevices)
@@ -70,12 +70,16 @@ func must(action string, err error) {
 }
 
 // checks if byte 4 is the FindMy network broadcast ID.
-func isFindMyDevice(b []byte) bool {
-	if len(b) < 5 {
+func isFindMyDevice(b map[uint16][]byte) bool {
+	if len(b) == 0 {
 		return false
 	}
-	if b[4] == findMyNetworkBroadcastID {
-		return true
+	for _, v := range b {
+		if len(b) < 5 {
+			continue
+		} else if v[4] == findMyNetworkBroadcastID {
+			return true
+		}
 	}
 	return false
 }

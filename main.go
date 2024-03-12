@@ -90,7 +90,7 @@ func must(action string, err error) {
 	}
 }
 
-// checks if byte 4 is the FindMy network broadcast ID.
+// checks if byte 0 is the FindMy network broadcast ID.
 func isFindMyDevice(b map[uint16][]byte) bool {
 	if len(b) == 0 {
 		return false

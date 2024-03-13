@@ -66,7 +66,7 @@ func main() {
 		fmt.Println("Devices found:")
 		for k, v := range devices {
 			companyName := resolveCompanyIdent(v[k].companyIdent)
-			localName := vcl[k].localName
+			localName := v[k].localName
 			findMyDevice := isFindMyDevice(v[k].manufacturerData)
 			ptab.AppendRow(table.Row{
 				fmt.Sprintf("%x", k),

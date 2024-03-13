@@ -1,3 +1,4 @@
+// Test
 package main
 
 import (
@@ -20,6 +21,7 @@ const (
 	adManSpecData            = byte(0xFF)   // 0xFF is the AD type for manufacturer specific data.
 	scannerRunTime           = 10           // The number of seconds to run the scanner.
 	companyIdentlocation     = "company_identifiers.yaml"
+	scanWait                 = time.Duration(1 * time.Second)
 )
 
 type manufacturerData map[uint16][]byte
@@ -64,21 +66,26 @@ func main() {
 		fmt.Println("Devices found:")
 		for k, v := range devices {
 			companyName := resolveCompanyIdent(v[k].companyIdent)
+			localName := vcl[k].localName
+			findMyDevice := isFindMyDevice(v[k].manufacturerData)
 			ptab.AppendRow(table.Row{
 				fmt.Sprintf("%x", k),
-				v[k].localName,
+				localName,
 				companyName,
-				isFindMyDevice(v[k].manufacturerData),
+				findMyDevice,
 			})
 		}
 		ptab.SetStyle(table.StyleRounded)
-		// clearScreen()
+		// clears the screen.
+		clearScreen()
+		// Render the table.
 		ptab.Render()
-		// Clear the devices map.
+		// Reset the rows in the table.
 		ptab.ResetRows()
+		// clear the devices map.
 		devices = make(trackingDevices)
-		// Wait 5 seconds before scanning again.
-		time.Sleep(5 * time.Second)
+		// Wait x seconds before scanning again.
+		time.Sleep(scanWait)
 	}
 
 }

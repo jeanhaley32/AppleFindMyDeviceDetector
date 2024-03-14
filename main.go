@@ -131,7 +131,9 @@ func isFindMyDevice(b map[uint16][]byte) bool {
 	return false
 }
 
-func clearScreen() {
+// Executes whichever clear command exists for the OS running this application
+// Supports Linux, Windows, and Mac OS
+func clearScreen() {xt
 	cmd := exec.Command("clear") // Linux or macOS
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/c", "cls") // Windows
@@ -149,7 +151,7 @@ func getCompanyIdent(md manData) uint16 {
 	return 0
 }
 
-// resolveCompanyIdent returns the name of the company from the ingested company identifiers.
+// resolve coporate identity into a string
 func resolveCompanyIdent(c *CorpIdentMap, t devValue) devName {
 	if val, ok := (*c)[t]; ok {
 		return val
@@ -157,7 +159,7 @@ func resolveCompanyIdent(c *CorpIdentMap, t devValue) devName {
 	return "Unknown"
 }
 
-// ingestCorpDevices reads the company identifiers from a YAML file and returns a map of the company identifiers.
+// converts YAML list into a hashmap of Corporate identifiers
 func ingestCorpDevices(loc string) CorpIdentMap {
 	cmap = make(CorpIdentMap)
 	// define a map to hold individual company identifiers.
@@ -186,7 +188,7 @@ func ingestCorpDevices(loc string) CorpIdentMap {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Loop through the company identifiers and return the name of the company.
+	// Convert YAML struct into a hashmap
 	for _, v := range c.CompanyIdentifiers {
 		cmap[v.Value] = v.Name
 	}

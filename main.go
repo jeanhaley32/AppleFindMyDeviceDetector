@@ -33,9 +33,6 @@ type devContent struct {
 	companyIdent     devValue
 }
 
-// map to hold the devices found.
-type bleDevs map[uint16]map[uint16]devContent
-
 type devValue uint16
 type devName string
 
@@ -133,7 +130,7 @@ func isFindMyDevice(b map[uint16][]byte) bool {
 
 // Executes whichever clear command exists for the OS running this application
 // Supports Linux, Windows, and Mac OS
-func clearScreen() {xt
+func clearScreen() {
 	cmd := exec.Command("clear") // Linux or macOS
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/c", "cls") // Windows

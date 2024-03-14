@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -43,7 +44,7 @@ type CorpIdentMap map[devValue]devName
 
 var (
 	adapter = bluetooth.DefaultAdapter
-	devices = make(bleDevs)
+	devices sync.Map //make(bleDevs)
 	cmap    = make(CorpIdentMap)
 )
 
@@ -55,36 +56,46 @@ func main() {
 	ptab := table.NewWriter()
 	ptab.SetOutputMirror(os.Stdout)
 	ptab.AppendHeader(table.Row{"Device ID", "Name", "Company", "FindMy"})
+	wg := sync.WaitGroup{}
 	for {
 		// Start scanning.
 		fmt.Println("Scanning for nearby Bluetooth devices...")
 		t := time.Now()
-		err := adapter.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
-			if time.Now().After(t.Add(scanTime)) {
-				fmt.Println("Scan time exceeded")
-				adapter.StopScan() // Stop scanning after 10 seconds.
-			}
-			devices[device.Address.Get16Bit()] = map[uint16]devContent{
-				device.Address.Get16Bit(): {
-					manufacturerData: device.ManufacturerData(),
-					localName:        devName(device.LocalName()),
-					companyIdent:     devValue(getCompanyIdent(device.ManufacturerData())),
-				}}
-		})
-		must("start scan", err)
+		wg.Add(1)
+		go func() {
+			err := adapter.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
+				if time.Now().After(t.Add(scanTime)) {
+					fmt.Println("Scan time exceeded")
+					adapter.StopScan() // Stop scanning after 10 seconds.
+				}
+				devices.Store(device.Address.Get16Bit(), map[uint16]devContent{
+					device.Address.Get16Bit(): {
+						manufacturerData: device.ManufacturerData(),
+						localName:        devName(device.LocalName()),
+						companyIdent:     devValue(getCompanyIdent(device.ManufacturerData())),
+					}})
+			})
+			must("start scan", err)
+			wg.Done()
+		}()
+		wg.Wait()
 		// Print the devices found.
 		fmt.Println("Devices found:")
-		for k, v := range devices {
-			companyName := resolveCompanyIdent(&cmap, v[k].companyIdent)
-			localName := v[k].localName
-			findMyDevice := isFindMyDevice(v[k].manufacturerData)
-			ptab.AppendRow(table.Row{
-				fmt.Sprintf("%x", k),
-				localName,
-				companyName,
-				findMyDevice,
-			})
-		}
+		devices.Range(func(k, v interface{}) bool {
+			for k, v := range v.(map[uint16]devContent) {
+				companyName := resolveCompanyIdent(&cmap, v.companyIdent)
+				localName := v.localName
+				findMyDevice := isFindMyDevice(v.manufacturerData)
+				ptab.AppendRow(table.Row{
+					fmt.Sprintf("%x", k),
+					localName,
+					companyName,
+					findMyDevice,
+				})
+			}
+			return true
+		})
+		// Set the table style.
 		ptab.SetStyle(table.StyleRounded)
 		// clears the screen.
 		clearScreen()
@@ -93,7 +104,7 @@ func main() {
 		// Reset the rows in the table.
 		ptab.ResetRows()
 		// clear the devices map.
-		devices = make(bleDevs)
+		devices = sync.Map{}
 		// Wait x seconds before scanning again.
 		time.Sleep(scanWait)
 	}

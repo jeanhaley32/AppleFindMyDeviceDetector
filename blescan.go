@@ -25,19 +25,20 @@ type scanDevs struct {
 	ingPath  ingestPath         // Channel to ingest the devices.
 }
 
-// bluetooth devices manufacturer data.
+// store for bluetooth device Manufacturer specific data
 type manData map[uint16][]byte
 
-// ingestPath
+// Return path for found devices
 type ingestPath chan *sync.Map
 
+// struct defining an individual devices data
 type devContent struct {
 	manufacturerData manData
 	localName        devName
 	companyIdent     devValue
 }
 
-// scanDevs scans for nearby Bluetooth devices and stores them in a map.
+// populates the local device map by scanning for local BLE devices
 func (s *scanDevs) scan() {
 	// check for signal to stop scanning.
 	fmt.Println("Scanning for nearby Bluetooth devices...")
@@ -61,11 +62,12 @@ func (s *scanDevs) scan() {
 	}
 }
 
+// returns a new scan devices.
 func newScanDevs(wg *sync.WaitGroup, scanTime time.Duration, adptr *bluetooth.Adapter, devices *sync.Map) *scanDevs {
 	return &scanDevs{wg: wg, scanTime: scanTime, adptr: adptr, devices: devices}
 }
 
-// begins scan loop
+// scan loop: scans for devices; passes them down the ingest path; sleeps and starts again. 
 func (s *scanDevs) startScan() {
 	for {
 		select {
@@ -82,7 +84,7 @@ func (s *scanDevs) startScan() {
 	}
 }
 
-// start begins the scan for devices.
+// Boot-straping routine for the BLE scanner. 
 func startBleScanner(wg *sync.WaitGroup, ingPath *ingestPath) error {
 	d := new(sync.Map)
 	adapter := bluetooth.DefaultAdapter

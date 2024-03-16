@@ -4,34 +4,19 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"runtime"
 	"sync"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"gopkg.in/yaml.v2"
-	"tinygo.org/x/bluetooth"
 )
 
 const (
-	// The UUID of an Apple findmy device.
+	companyIdentlocation     = "company_identifiers.yaml"
+	adManSpecData            = byte(0xFF)   // 0xFF is the AD type for manufacturer specific data.
 	appleIdentifier          = byte(0x004C) // 0x004C is the company identifier for Apple.
 	findMyNetworkBroadcastID = byte(0x12)   // 0x12 is the broadcast ID for the FindMy network.
-	adManSpecData            = byte(0xFF)   // 0xFF is the AD type for manufacturer specific data.
-	companyIdentlocation     = "company_identifiers.yaml"
-	scanWait                 = time.Duration(1 * time.Second)
-	scanTime                 = time.Duration(5 * time.Second)
 )
-
-// bluetooth devices manufacturer data.
-type manData map[uint16][]byte
-
-type devContent struct {
-	manufacturerData map[uint16][]byte
-	localName        devName
-	companyIdent     devValue
-}
 
 type devValue uint16
 type devName string
@@ -40,43 +25,21 @@ type devName string
 type CorpIdentMap map[devValue]devName
 
 var (
-	adapter = bluetooth.DefaultAdapter
-	devices sync.Map //make(bleDevs)
-	cmap    = make(CorpIdentMap)
+	cmap = make(CorpIdentMap)
 )
 
 func main() {
-	// Ingest the company identifiers.
+	// Cmap store company identifiers
 	cmap = ingestCorpDevices(companyIdentlocation)
+	ingp := make(ingestPath)
 	// Enable BLE interface.
-	must("enable BLE stack", adapter.Enable())
 	ptab := table.NewWriter()
 	ptab.SetOutputMirror(os.Stdout)
 	ptab.AppendHeader(table.Row{"Device ID", "Name", "Company", "FindMy"})
 	wg := sync.WaitGroup{}
-	for {
-		// Start scanning.
-		fmt.Println("Scanning for nearby Bluetooth devices...")
-		t := time.Now()
-		wg.Add(1)
-		go func() {
-			err := adapter.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
-				if time.Now().After(t.Add(scanTime)) {
-					fmt.Println("Scan time exceeded")
-					adapter.StopScan() // Stop scanning after 10 seconds.
-				}
-				devices.Store(device.Address.Get16Bit(), map[uint16]devContent{
-					device.Address.Get16Bit(): {
-						manufacturerData: device.ManufacturerData(),
-						localName:        devName(device.LocalName()),
-						companyIdent:     devValue(getCompanyIdent(device.ManufacturerData())),
-					}})
-			})
-			must("start scan", err)
-			wg.Done()
-		}()
-		wg.Wait()
-		// Print the devices found.
+	go startBleScanner(&wg, &ingp)
+	fmt.Println("scanner started")
+	for devices := range ingp {
 		fmt.Println("Devices found:")
 		devices.Range(func(k, v interface{}) bool {
 			for k, v := range v.(map[uint16]devContent) {
@@ -101,17 +64,9 @@ func main() {
 		// Reset the rows in the table.
 		ptab.ResetRows()
 		// clear the devices map.
-		devices = sync.Map{}
+		devices = new(sync.Map)
 		// Wait x seconds before scanning again.
 		time.Sleep(scanWait)
-	}
-
-}
-
-// must is a helper function that wraps a call to a function returning an error and logs it if the error is non-nil.
-func must(action string, err error) {
-	if err != nil {
-		log.Fatalf("Failed to %s: %v", action, err)
 	}
 }
 
@@ -126,17 +81,6 @@ func isFindMyDevice(b map[uint16][]byte) bool {
 		}
 	}
 	return false
-}
-
-// Executes whichever clear command exists for the OS running this application
-// Supports Linux, Windows, and Mac OS
-func clearScreen() {
-	cmd := exec.Command("clear") // Linux or macOS
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", "cls") // Windows
-	}
-	cmd.Stdout = os.Stdout
-	cmd.Run()
 }
 
 func getCompanyIdent(md manData) uint16 {

@@ -21,7 +21,7 @@ type scanDevs struct {
 	adptr    *bluetooth.Adapter // The adapter to use for scanning.
 	devices  *sync.Map          // The map to store the devices.
 	start    time.Time          // The time the scan started.
-	quit     chan struct{}      // Channel to signal the scan to stop.
+	quit     chan any           // Channel to signal the scan to stop.
 	ingPath  ingestPath         // Channel to ingest the devices.
 }
 
@@ -63,11 +63,11 @@ func (s *scanDevs) scan() {
 }
 
 // returns a new scan devices.
-func newScanDevs(wg *sync.WaitGroup, scanTime time.Duration, adptr *bluetooth.Adapter, devices *sync.Map) *scanDevs {
-	return &scanDevs{wg: wg, scanTime: scanTime, adptr: adptr, devices: devices}
+func newScanDevs(wg *sync.WaitGroup, scanTime time.Duration, adptr *bluetooth.Adapter, devices *sync.Map, q chan any) *scanDevs {
+	return &scanDevs{wg: wg, scanTime: scanTime, adptr: adptr, devices: devices, quit: q}
 }
 
-// scan loop: scans for devices; passes them down the ingest path; sleeps and starts again. 
+// scan loop: scans for devices; passes them down the ingest path; sleeps and starts again.
 func (s *scanDevs) startScan() {
 	for {
 		select {
@@ -84,19 +84,20 @@ func (s *scanDevs) startScan() {
 	}
 }
 
-// Boot-straping routine for the BLE scanner. 
-func startBleScanner(wg *sync.WaitGroup, ingPath *ingestPath) error {
+// Boot-straping routine for the BLE scanner.
+func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 	d := new(sync.Map)
 	adapter := bluetooth.DefaultAdapter
 	err := adapter.Enable()
 	if err != nil {
 		return fmt.Errorf("failed to enable bluetooth adapter: %v", err)
 	}
-	scan := newScanDevs(wg, scanTime, adapter, d)
-	scan.ingPath = *ingPath
-	wg.Add(1)
+	scan := newScanDevs(wg, scanTime, adapter, d, q)
+	scan.ingPath = ingPath
 	scan.start = time.Now()
-	go scan.startScan()
-	wg.Wait()
+	go func() {
+		// create a new scanner
+		scan.startScan()
+	}()
 	return nil
 }

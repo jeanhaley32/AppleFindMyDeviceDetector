@@ -1,10 +1,9 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 )
@@ -16,7 +15,8 @@ const (
 )
 
 var (
-	cmap = make(CorpIdentMap)
+	cmap   = make(CorpIdentMap)
+	header = table.Row{"Device ID", "Name", "Company", "FindMy"}
 )
 
 func main() {
@@ -30,37 +30,30 @@ func main() {
 	ptab.SetOutputMirror(os.Stdout)
 	// Set the table headers.
 	ptab.AppendHeader(table.Row{"Device ID", "Name", "Company", "FindMy"})
-	// Create a wait group to wait for the scanner to finish. we're not actually doing that in this iteration
+	// Create a wait group to wait for the scanner to finish.
+	// we're not actually doing that in this iteration
 	wg := sync.WaitGroup{}
 	// start the scanner in a go routine.
-	go startBleScanner(&wg, &ingp)
-	// listen for devices on the ingestion path.
-	for devices := range ingp {
-		fmt.Println("Devices found:")
-		devices.Range(func(k, v interface{}) bool {
-			// iterate over the devices and add them to the table.
-			for k, v := range v.(map[uint16]devContent) {
-				companyName := resolveCompanyIdent(&cmap, v.companyIdent)
-				localName := v.localName
-				findMyDevice := isFindMyDevice(v.manufacturerData)
-				ptab.AppendRow(table.Row{
-					fmt.Sprintf("%x", k),
-					localName,
-					companyName,
-					findMyDevice,
-				})
-			}
-			return true
-		})
-		// Set the table style.
-		ptab.SetStyle(table.StyleRounded)
-		// clears the screen.
-		clearScreen()
-		// Render the table.
-		ptab.Render()
-		// Reset the rows in the table.
-		ptab.ResetRows()
-		// Wait x seconds before scanning again.
-		time.Sleep(scanWait)
-	}
+	wg.Add(2)
+	go func() {
+		// create a new scanner'
+		err := startBleScanner(
+			&wg,
+			ingp,
+			make(chan any),
+		)
+		must("Failed to start BlueTooth Scanner", err)
+	}()
+	go func() {
+		// start the writer
+		err := startWriter(
+			&wg, make(chan any),
+			os.Stdout,
+			header,
+			ingp,
+		)
+		must("Failed to start writer", err)
+	}()
+	wg.Wait()
+	log.Printf("Scanner and writer have finished.")
 }

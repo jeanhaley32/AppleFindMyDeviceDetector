@@ -16,22 +16,12 @@ const (
 
 var (
 	cmap   = make(CorpIdentMap)
-	header = table.Row{"Device ID", "Name", "Company", "FindMy"}
+	header = table.Row{"Device ID", "Name", "Company", "FindMy", "Last Seen"}
 )
 
 func main() {
-	// Load the company identifiers into a map.
 	cmap = ingestCorpDevices(companyIdentlocation)
-	// create ingestion path
 	ingp := make(ingestPath)
-	// create a new table writer.
-	ptab := table.NewWriter()
-	// Set the output to stdout.
-	ptab.SetOutputMirror(os.Stdout)
-	// Set the table headers.
-	ptab.AppendHeader(table.Row{"Device ID", "Name", "Company", "FindMy"})
-	// Create a wait group to wait for the scanner to finish.
-	// we're not actually doing that in this iteration
 	wg := sync.WaitGroup{}
 	// start the scanner in a go routine.
 	wg.Add(2)

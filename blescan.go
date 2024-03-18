@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -10,29 +12,47 @@ import (
 )
 
 const (
-	deadline       = time.Duration(15 * time.Second) // deadline for the scan.
-	scanBufferSize = 5                               // buffer size for the scan channel.
-	scanRate       = 500 * time.Millisecond          // rate at which to scan for devices.
-	writeTime      = 5 * time.Second                 // rate at which to write devices to the ingest path.
+	scanRate       = 500 * time.Millisecond // rate at which to scan for devices.
+	scanBufferSize = 100                    // buffer size for the scan channel.
+	scanLength     = 2 * time.Second        // length of time to scan for devices.
+	writeTime      = 5 * time.Second        // rate at which to write devices to the ingest path.
+	trimTime       = 1 * time.Second        // rate at which to trim the map of old devices.
+	oldestDevice   = 300 * time.Second      // time to keep a device in the map.
 )
 
 type scanner struct {
 	wg      *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
 	adptr   *bluetooth.Adapter // The adapter to use for scanning.
 	devices *sync.Map          // The map to store the devices.
+	count   int                // The number of devices found.
 	start   time.Time          // The time the scan started.
 	quit    chan any           // Channel to signal the scan to stop.
 	ingPath ingestPath         // Channel to ingest the devices.
+}
+
+type DevContentList []devContent
+
+func (d DevContentList) Len() int {
+	return len(d)
+}
+
+func (d DevContentList) Less(i, j int) bool {
+	return d[i].id < d[j].id
+}
+
+func (d DevContentList) Swap(i, j int) {
+	d[i], d[j] = d[j], d[i]
 }
 
 // store for bluetooth device Manufacturer specific data
 type manData map[uint16][]byte
 
 // Return path for found devices
-type ingestPath chan map[uint16]devContent
+type ingestPath chan []devContent
 
 // struct defining an individual devices data
 type devContent struct {
+	id               uint16
 	manufacturerData manData
 	localName        string
 	companyIdent     uint16
@@ -42,17 +62,28 @@ type devContent struct {
 // populates the local device map by scanning for local BLE devices
 func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
 	// check for signal to stop scanning.
-	err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
+	for {
+		startScanTimer := time.NewTimer(scanRate)
 		select {
 		case <-s.quit:
-			adapter.StopScan()
+			s.wg.Done()
 			return
-		case <-time.After(scanRate):
-			returnPath <- device
+		case <-startScanTimer.C:
+			stopScanTimer := time.NewTimer(scanLength)
+			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
+				select {
+				case <-stopScanTimer.C:
+					adapter.StopScan()
+					return
+				default:
+					returnPath <- device
+				}
+			})
+			if err != nil {
+				scanlog(fmt.Sprintf("failed to scan: %v\n", err))
+			}
+
 		}
-	})
-	if err != nil {
-		scanlog(fmt.Sprintf("failed to scan: %v\n", err))
 	}
 }
 
@@ -63,8 +94,10 @@ func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map,
 
 // scan loop: scans for devices; passes them down the ingest path; sleeps and starts again.
 func (s *scanner) startScan() {
+	s.count = 0
 	returnPath := make(chan bluetooth.ScanResult, scanBufferSize)
 	writeTicker := time.NewTicker(writeTime) // ticker to write devices to the ingest path.
+	trimTicker := time.NewTicker(trimTime)
 	go s.scan(returnPath)
 	for {
 		select {
@@ -75,17 +108,19 @@ func (s *scanner) startScan() {
 			// add the device to the map.
 			s.devices.Store(device.Address.Get16Bit(), map[uint16]devContent{
 				device.Address.Get16Bit(): {
+					id:               device.Address.Get16Bit(),
 					manufacturerData: device.ManufacturerData(),
 					localName:        device.LocalName(),
 					companyIdent:     getCompanyIdent(device.ManufacturerData()),
 					lastSeen:         time.Now(),
 				},
 			})
+			s.count++
 		case <-writeTicker.C:
 			// pass the devices down the ingest path.
-			s.ingPath <- s.decoupleMap()
-		case <-time.After(deadline):
-			close(s.quit)
+			s.ingPath <- s.sortAndPass()
+		case <-trimTicker.C:
+			s.TrimMap()
 		}
 
 	}
@@ -111,17 +146,40 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 	return nil
 }
 
-func (s *scanner) decoupleMap() map[uint16]devContent {
-	deviceMap := make(map[uint16]devContent)
-	s.devices.Range(func(k, v interface{}) bool {
-		deviceMap[k.(uint16)] = v.(map[uint16]devContent)[k.(uint16)]
-		return true
-	})
-	return deviceMap
-}
-
 func scanlog(s string) {
 	log.Printf("Scanner: %v", s)
 }
 
-// func (s *scanner) trimOldDevices()
+// Trims the map of devices that have not been seen in the last <oldestDevice> time.
+// modified count to reflect the number of devices removed.
+func (s *scanner) TrimMap() {
+	removed := 0
+	s.devices.Range(func(k, v interface{}) bool {
+		switch t := reflect.TypeOf(v); t {
+		case reflect.TypeOf(map[uint16]devContent{}):
+			for _, dv := range v.(map[uint16]devContent) {
+				if time.Since(dv.lastSeen) > oldestDevice {
+					s.devices.Delete(k)
+					removed++
+				}
+			}
+		}
+		return true
+	})
+	s.count -= removed
+}
+
+func (s *scanner) sortAndPass() DevContentList {
+	// sort devices by device ID
+	// pass devices to ingest path
+	sortedList := DevContentList{}
+	s.devices.Range(func(k, v interface{}) bool {
+		for _, dv := range v.(map[uint16]devContent) {
+			sortedList = append(sortedList, dv)
+		}
+		return true
+	})
+	sort.Sort(sortedList)
+	// return sorted list by device id
+	return sortedList
+}

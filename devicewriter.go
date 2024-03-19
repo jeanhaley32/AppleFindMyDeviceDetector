@@ -69,7 +69,7 @@ func (d *screenWriter) Write(devs []devContent) {
 	d.ptab.SetStyle(table.StyleColoredBright)
 	// clears the screen.
 	clearScreen()
-	// Render the table.
+	// // Render the table.
 	d.ptab.Render()
 	// Reset the rows in the table.
 	d.ptab.ResetRows()

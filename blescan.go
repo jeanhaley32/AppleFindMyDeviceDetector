@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -12,12 +11,12 @@ import (
 )
 
 const (
-	scanRate       = 250 * time.Millisecond // rate at which to scan for devices.
+	scanRate       = 100 * time.Millisecond // rate at which to scan for devices.
 	scanBufferSize = 100                    // buffer size for the scan channel.
-	scanLength     = 4 * time.Second        // length of time to scan for devices.
+	scanLength     = 500 * time.Millisecond // length of time to scan for devices.
 	writeTime      = 10 * time.Second       // rate at which to write devices to the ingest path.
-	trimTime       = 1 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice   = 30 * time.Second       // time to keep a device in the map.
+	trimTime       = 2 * time.Second        // rate at which to trim the map of old devices.
+	oldestDevice   = 80 * time.Second       // time to keep a device in the map.
 )
 
 type scanner struct {
@@ -80,7 +79,7 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
 				}
 			})
 			if err != nil {
-				scanlog(fmt.Sprintf("failed to scan: %v\n", err))
+				log.Printf("failed to scan: %v\n", err)
 			}
 
 		}
@@ -128,7 +127,6 @@ func (s *scanner) startScan() {
 
 // Boot-straping routine for the BLE scanner.
 func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
-	log.Println("scanner: creating BLE scanner...")
 	d := new(sync.Map)
 	adapter := bluetooth.DefaultAdapter
 	err := adapter.Enable()
@@ -140,14 +138,9 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 	scan.start = time.Now()
 	go func() {
 		// start scanning for devices
-		log.Println("scanner: starting BLE scanner...")
 		scan.startScan()
 	}()
 	return nil
-}
-
-func scanlog(s string) {
-	log.Printf("Scanner: %v", s)
 }
 
 // Trims the map of devices that have not been seen in the last <oldestDevice> time.
@@ -155,13 +148,10 @@ func scanlog(s string) {
 func (s *scanner) TrimMap() {
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
-		switch t := reflect.TypeOf(v); t {
-		case reflect.TypeOf(map[uint16]devContent{}):
-			for _, dv := range v.(map[uint16]devContent) {
-				if time.Since(dv.lastSeen) > oldestDevice {
-					s.devices.Delete(k)
-					removed++
-				}
+		for _, dv := range v.(map[bluetooth.UUID]devContent) {
+			if time.Since(dv.lastSeen) > oldestDevice {
+				s.devices.Delete(k)
+				removed++
 			}
 		}
 		return true
@@ -170,6 +160,7 @@ func (s *scanner) TrimMap() {
 }
 
 func (s *scanner) sortAndPass() DevContentList {
+	fmt.Println("scanner: sorting devices and passing to ingest path...")
 	// sort devices by device ID
 	// pass devices to ingest path
 	sortedList := DevContentList{}

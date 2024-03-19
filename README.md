@@ -7,6 +7,11 @@ Bluetooth device scanner in two routines
 - screen writer routine.
   Receives a pre-sorted list of devices from the scanner, and prints them to a table.
 
+**Screenshot**
+
+![scanner screenshot](scannerpic.png)
+
+
 > Below is an AI generated breakdown of how this code works.
 
 ## Screen Writer

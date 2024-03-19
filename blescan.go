@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	scanRate       = 100 * time.Millisecond // rate at which to scan for devices.
+	scanRate       = 200 * time.Millisecond // rate at which to scan for devices.
 	scanBufferSize = 100                    // buffer size for the scan channel.
 	scanLength     = 500 * time.Millisecond // length of time to scan for devices.
-	writeTime      = 10 * time.Second       // rate at which to write devices to the ingest path.
-	trimTime       = 2 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice   = 80 * time.Second       // time to keep a device in the map.
+	writeTime      = 2 * time.Second        // rate at which to write devices to the ingest path.
+	trimTime       = 5 * time.Second        // rate at which to trim the map of old devices.
+	oldestDevice   = 60 * time.Second       // time to keep a device in the map.
 )
 
 type scanner struct {
@@ -160,7 +160,6 @@ func (s *scanner) TrimMap() {
 }
 
 func (s *scanner) sortAndPass() DevContentList {
-	fmt.Println("scanner: sorting devices and passing to ingest path...")
 	// sort devices by device ID
 	// pass devices to ingest path
 	sortedList := DevContentList{}

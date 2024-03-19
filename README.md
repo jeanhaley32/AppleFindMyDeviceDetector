@@ -1,5 +1,6 @@
 # findmyBLEscanner
-**Purpose**
+**Objective**
+
 Bluetooth device scanner in two routines
 - scanner routine
   Detects and maintain a list of local Bluetooth devices, passes them to the writer routine.

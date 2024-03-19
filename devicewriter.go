@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -20,6 +19,7 @@ type screenWriter struct {
 
 func newWriter(wg *sync.WaitGroup, f *os.File, header table.Row, q chan any, r ingestPath) *screenWriter {
 	ptab := table.NewWriter()
+	ptab.SetTitle("Bluetooth Devices")
 	ptab.SetOutputMirror(f)
 	ptab.AppendHeader(header)
 	return &screenWriter{
@@ -46,8 +46,6 @@ func (d *screenWriter) execute() {
 			return
 		case devices := <-d.readPath:
 			d.Write(devices)
-		case <-time.After(5 * time.Second): // Timeout example
-			writelog("No data received in time")
 		}
 	}
 }
@@ -60,23 +58,19 @@ func (d *screenWriter) Write(devs []devContent) {
 		findMyDevice := isFindMyDevice(v.manufacturerData)
 		timeSince := time.Since(v.lastSeen)
 		d.ptab.AppendRow(table.Row{
-			fmt.Sprintf("%x", v.id),
+			fmt.Sprintf("%v", v.id),
 			localName,
 			companyName,
 			findMyDevice,
-			fmt.Sprintf("%.2fs", timeSince.Truncate(time.Second).Seconds()),
+			fmt.Sprintf("%.0fs", timeSince.Truncate(time.Second).Seconds()),
 		})
 	}
 	// Set the table style.
-	d.ptab.SetStyle(table.StyleRounded)
+	d.ptab.SetStyle(table.StyleColoredBright)
 	// clears the screen.
 	clearScreen()
 	// Render the table.
 	d.ptab.Render()
 	// Reset the rows in the table.
 	d.ptab.ResetRows()
-}
-
-func writelog(s string) {
-	log.Printf("Writer: %v.", s)
 }

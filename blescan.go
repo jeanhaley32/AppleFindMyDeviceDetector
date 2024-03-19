@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	scanRate       = 500 * time.Millisecond // rate at which to scan for devices.
+	scanRate       = 250 * time.Millisecond // rate at which to scan for devices.
 	scanBufferSize = 100                    // buffer size for the scan channel.
-	scanLength     = 2 * time.Second        // length of time to scan for devices.
-	writeTime      = 5 * time.Second        // rate at which to write devices to the ingest path.
+	scanLength     = 4 * time.Second        // length of time to scan for devices.
+	writeTime      = 10 * time.Second       // rate at which to write devices to the ingest path.
 	trimTime       = 1 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice   = 300 * time.Second      // time to keep a device in the map.
+	oldestDevice   = 30 * time.Second       // time to keep a device in the map.
 )
 
 type scanner struct {
@@ -37,7 +37,7 @@ func (d DevContentList) Len() int {
 }
 
 func (d DevContentList) Less(i, j int) bool {
-	return d[i].id < d[j].id
+	return d[i].id.String() < d[j].id.String()
 }
 
 func (d DevContentList) Swap(i, j int) {
@@ -52,14 +52,14 @@ type ingestPath chan []devContent
 
 // struct defining an individual devices data
 type devContent struct {
-	id               uint16
+	id               bluetooth.UUID
 	manufacturerData manData
 	localName        string
 	companyIdent     uint16
 	lastSeen         time.Time
 }
 
-// populates the local device map by scanning for local BLE devices
+// active scanner, scans for devices and passes them to it's parent process.
 func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
 	// check for signal to stop scanning.
 	for {
@@ -106,9 +106,9 @@ func (s *scanner) startScan() {
 			return
 		case device := <-returnPath:
 			// add the device to the map.
-			s.devices.Store(device.Address.Get16Bit(), map[uint16]devContent{
-				device.Address.Get16Bit(): {
-					id:               device.Address.Get16Bit(),
+			s.devices.Store(device.Address.UUID, map[bluetooth.UUID]devContent{
+				device.Address.UUID: {
+					id:               device.Address.UUID,
 					manufacturerData: device.ManufacturerData(),
 					localName:        device.LocalName(),
 					companyIdent:     getCompanyIdent(device.ManufacturerData()),
@@ -174,7 +174,7 @@ func (s *scanner) sortAndPass() DevContentList {
 	// pass devices to ingest path
 	sortedList := DevContentList{}
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[uint16]devContent) {
+		for _, dv := range v.(map[bluetooth.UUID]devContent) {
 			sortedList = append(sortedList, dv)
 		}
 		return true

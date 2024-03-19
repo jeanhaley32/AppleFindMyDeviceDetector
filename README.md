@@ -7,8 +7,8 @@ Bluetooth device scanner in two routines
 - screen writer routine.
   Receives a pre-sorted list of devices from the scanner, and prints them to a table.
 
-Below is an AI generated breakdown of how this code works.
----
+> Below is an AI generated breakdown of how this code works.
+
 ## Screen Writer
 **Purpose**
 
@@ -47,17 +47,29 @@ Displays the output of the Bluetooth scanner in a neatly formatted table on the 
     * Renders the updated table.
     * Resets the table rows for the next update.
 
-**Key Points**
+* **Helper Functions**
+* **`resolveCompanyIdent(c *CorpIdentMap, t uint16) string`:**
+    * Takes a pointer to the `CorpIdentMap` (`c`) and a company identifier (`t`).
+    * Looks up the identifier in the map.
+    * Returns the corresponding company name if found, or "Unknown" if not.
 
-* **External Libraries:** This code depends on:
-    * `github.com/jedib0t/go-pretty/v6/table` for creating the table.
-    * A function `clearScreen` (not provided here) which would be platform-specific for clearing the terminal.
-* **Helper Functions** 
-    * `resolveCompanyIdent` and `isFindMyDevice` are presumably used to extract more human-readable information from the device's manufacturer data. You would need the implementation of these functions and potentially a company ID map (`cmap`) to fully understand their logic.
+* **`ingestCorpDevices(loc string) CorpIdentMap`:**
+    1. Opens the YAML file at the given location (`company_identifiers.yaml`).
+    2. Defines structs to model the YAML data.
+    3. Uses a YAML decoder to read the file contents into the `CompanyIdentifiers` struct.
+    4. Iterates over the decoded data, populating the `CorpIdentMap`. 
+    5. Returns the filled `CorpIdentMap`.
 
-**Let me know if you'd like any of the missing parts (like `clearScreen`, `resolveCompanyIdent`, etc.) explained or if you have questions about specific sections!** 
+* **`isFindMyDevice(b map[uint16][]byte) bool`:**
+    * Takes the device's manufacturer data (`b`).
+    * Iterates through the manufacturer data, checking if the first byte of any entry matches the "Find My" ID.
+    * Returns `true` if a match is found, otherwise `false`.
 
+* **`getCompanyIdent(md manData) uint16`:**
+    * Takes the device's manufacturer data (`md`).
+    * If the data isn't empty, it simply returns the first manufacturer ID found (assumes that's how the company ID is embedded). 
 
+---
 ## BLE Scanner
 This code implements a Bluetooth Low Energy (BLE) device scanner. Its essential functions are:
 

@@ -3,9 +3,14 @@
 
 Bluetooth device scanner in two routines
 - scanner routine
-  Detects and maintain a list of local Bluetooth devices, passes them to the writer routine.
+  - Detects and maintains a list of local Bluetooth devices, sorts and passes down an ingest path.
 - screen writer routine.
-  Receives a pre-sorted list of devices from the scanner, and prints them to a table.
+  - Receives pre-sorted list of devices on the ingest path, and prints them to a table.
+
+**Screenshot**
+
+![scanner screenshot](scannerpic.png)
+
 
 > Below is an AI generated breakdown of how this code works.
 

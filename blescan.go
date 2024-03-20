@@ -36,7 +36,7 @@ func (d DevContentList) Len() int {
 }
 
 func (d DevContentList) Less(i, j int) bool {
-	return d[i].id.String() < d[j].id.String()
+	return d[i].id < d[j].id
 }
 
 func (d DevContentList) Swap(i, j int) {
@@ -51,7 +51,7 @@ type ingestPath chan []devContent
 
 // struct defining an individual devices data
 type devContent struct {
-	id               bluetooth.UUID
+	id               string
 	manufacturerData manData
 	localName        string
 	companyIdent     uint16
@@ -104,10 +104,11 @@ func (s *scanner) startScan() {
 			s.wg.Done()
 			return
 		case device := <-returnPath:
-			// add the device to the map.
-			s.devices.Store(device.Address.UUID, map[bluetooth.UUID]devContent{
+			// check if the device.Address contains a MAC address or a UUID
+
+			s.devices.Store(device, map[bluetooth.UUID]devContent{
 				device.Address.UUID: {
-					id:               device.Address.UUID,
+					id:               device.Address.String(),
 					manufacturerData: device.ManufacturerData(),
 					localName:        device.LocalName(),
 					companyIdent:     getCompanyIdent(device.ManufacturerData()),

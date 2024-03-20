@@ -105,9 +105,8 @@ func (s *scanner) startScan() {
 			return
 		case device := <-returnPath:
 			// check if the device.Address contains a MAC address or a UUID
-
-			s.devices.Store(device, map[bluetooth.UUID]devContent{
-				device.Address.UUID: {
+			s.devices.Store(device.Address.String(), map[string]devContent{
+				device.Address.String(): {
 					id:               device.Address.String(),
 					manufacturerData: device.ManufacturerData(),
 					localName:        device.LocalName(),
@@ -149,7 +148,7 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 func (s *scanner) TrimMap() {
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[bluetooth.UUID]devContent) {
+		for _, dv := range v.(map[string]devContent) {
 			if time.Since(dv.lastSeen) > oldestDevice {
 				s.devices.Delete(k)
 				removed++
@@ -165,7 +164,7 @@ func (s *scanner) sortAndPass() DevContentList {
 	// pass devices to ingest path
 	sortedList := DevContentList{}
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[bluetooth.UUID]devContent) {
+		for _, dv := range v.(map[string]devContent) {
 			sortedList = append(sortedList, dv)
 		}
 		return true

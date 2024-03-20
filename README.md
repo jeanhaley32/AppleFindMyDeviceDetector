@@ -1,7 +1,6 @@
 # findmyBLEscanner
-> This is written on a Mac, and is not yet tested on Windows or Linux. I'm aware that there is an issue with some of the methods called not showing up on Linux, and Windows at the moment.
 **Objective**
-
+> This should not work on both `Linux`, and `Mac os` Untested on `windows`
 Bluetooth device scanner in two routines
 - scanner routine
   - Detects and maintains a list of local Bluetooth devices, sorts and passes down an ingest path.

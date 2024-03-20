@@ -1,6 +1,6 @@
 # findmyBLEscanner
 **Objective**
-> This should not work on both `Linux`, and `Mac os` Untested on `windows`
+> This should now work on both `Linux`, and `Mac os` Untested on `windows`
 
 Bluetooth device scanner in two routines
 - scanner routine

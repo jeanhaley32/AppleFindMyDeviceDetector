@@ -1,6 +1,7 @@
 # findmyBLEscanner
 **Objective**
-> This should now work on both `Linux`, and `Mac os` Untested on `windows`
+> Application is tested on `Windows`, `Linux`, and `mac`.
+> `Windows` has an annoying flicker. I'm not sure what a good method of dealing with the screen buffering is.
 
 Bluetooth device scanner in two routines
 - scanner routine

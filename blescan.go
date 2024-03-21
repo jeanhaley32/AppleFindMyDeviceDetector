@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -16,7 +17,11 @@ const (
 	scanLength     = 500 * time.Millisecond // length of time to scan for devices.
 	writeTime      = 2 * time.Second        // rate at which to write devices to the ingest path.
 	trimTime       = 5 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice   = 60 * time.Second       // time to keep a device in the map.
+	oldestDevice   = 15 * time.Minute       // time to keep a device in the map.
+)
+
+var (
+	lastSent []devContent
 )
 
 type scanner struct {
@@ -29,16 +34,23 @@ type scanner struct {
 	ingPath ingestPath         // Channel to ingest the devices.
 }
 
+// list of devices
 type DevContentList []devContent
 
+// returns the length of the list
+// used to satisfy the sort.Interface
 func (d DevContentList) Len() int {
 	return len(d)
 }
 
+// return true if the device id is less than the device id at index j
+// used to satisfy the sort.Interface
 func (d DevContentList) Less(i, j int) bool {
 	return d[i].id < d[j].id
 }
 
+// swaps the devices at index i and j
+// used to satisfy the sort.Interface
 func (d DevContentList) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
@@ -46,10 +58,10 @@ func (d DevContentList) Swap(i, j int) {
 // store for bluetooth device Manufacturer specific data
 type manData map[uint16][]byte
 
-// Return path for found devices
+// ingestion path for devices.
 type ingestPath chan []devContent
 
-// struct defining an individual devices data
+// device content
 type devContent struct {
 	id               string
 	manufacturerData manData
@@ -58,7 +70,7 @@ type devContent struct {
 	lastSeen         time.Time
 }
 
-// active scanner, scans for devices and passes them to it's parent process.
+// Active scanner. scans for new devices and passes them back down it's return path.
 func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
 	// check for signal to stop scanning.
 	for {
@@ -91,7 +103,9 @@ func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map,
 	return &scanner{wg: wg, adptr: adptr, devices: devices, quit: q}
 }
 
-// scan loop: scans for devices; passes them down the ingest path; sleeps and starts again.
+// Primary operation block of the scanner.
+// Starts the scanner, listens for devices on the return path, stores them in map
+// periodically cleans up the map, and passes a sorted list of devices to the writer.
 func (s *scanner) startScan() {
 	s.count = 0
 	returnPath := make(chan bluetooth.ScanResult, scanBufferSize)
@@ -100,11 +114,12 @@ func (s *scanner) startScan() {
 	go s.scan(returnPath)
 	for {
 		select {
+		// check for the signal to stop scanning.
 		case <-s.quit:
 			s.wg.Done()
 			return
+		// recieve devices from the scanner and store them in the map.
 		case device := <-returnPath:
-			// check if the device.Address contains a MAC address or a UUID
 			s.devices.Store(device.Address.String(), map[string]devContent{
 				device.Address.String(): {
 					id:               device.Address.String(),
@@ -115,9 +130,15 @@ func (s *scanner) startScan() {
 				},
 			})
 			s.count++
+		// pass a list of devices to the writer.
 		case <-writeTicker.C:
-			// pass the devices down the ingest path.
-			s.ingPath <- s.sortAndPass()
+			sendList := s.sortAndPass()
+			// only send the list if it has changed.
+			if !areSlicesEqual(sendList, lastSent) {
+				lastSent = sendList
+				s.ingPath <- sendList
+			}
+		// start cleaning up the map of old devices.
 		case <-trimTicker.C:
 			s.TrimMap()
 		}
@@ -143,8 +164,7 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 	return nil
 }
 
-// Trims the map of devices that have not been seen in the last <oldestDevice> time.
-// modified count to reflect the number of devices removed.
+// cleans up stale devices from the map.
 func (s *scanner) TrimMap() {
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
@@ -159,9 +179,9 @@ func (s *scanner) TrimMap() {
 	s.count -= removed
 }
 
+// returns a sorted list of devices.
 func (s *scanner) sortAndPass() DevContentList {
-	// sort devices by device ID
-	// pass devices to ingest path
+
 	sortedList := DevContentList{}
 	s.devices.Range(func(k, v interface{}) bool {
 		for _, dv := range v.(map[string]devContent) {
@@ -172,4 +192,9 @@ func (s *scanner) sortAndPass() DevContentList {
 	sort.Sort(sortedList)
 	// return sorted list by device id
 	return sortedList
+}
+
+// compares and returns true if the two []devContent slices are equal.
+func areSlicesEqual(listOne, listTwo []devContent) bool {
+	return reflect.DeepEqual(listOne, listTwo)
 }

@@ -16,7 +16,7 @@ const (
 
 var (
 	cmap   = make(CorpIdentMap)
-	header = table.Row{"Device ID", "Name", "Company", "FindMy", "Last Seen"}
+	header = table.Row{"Device ID", "Name", "Company", "FindMy", "First Detected", "Last Seen", "times seen"}
 )
 
 func main() {

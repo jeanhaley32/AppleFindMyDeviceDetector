@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	scanRate       = 200 * time.Millisecond // rate at which to scan for devices.
-	scanBufferSize = 100                    // buffer size for the scan channel.
-	scanLength     = 500 * time.Millisecond // length of time to scan for devices.
-	writeTime      = 2 * time.Second        // rate at which to write devices to the ingest path.
-	trimTime       = 5 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice   = 15 * time.Minute       // time to keep a device in the map.
+	scanRate       = 100 * time.Millisecond  // rate at which to scan for devices.
+	scanBufferSize = 100                     // buffer size for the scan channel.
+	scanLength     = 1900 * time.Millisecond // length of time to scan for devices.
+	writeTime      = 10 * time.Second        // rate at which to write devices to the ingest path.
+	trimTime       = 1 * time.Second         // rate at which to trim the map of old devices.
+	oldestDevice   = 60 * time.Second        // time to keep a device in the map.
 )
 
 var (
@@ -46,7 +46,7 @@ func (d DevContentList) Len() int {
 // return true if the device id is less than the device id at index j
 // used to satisfy the sort.Interface
 func (d DevContentList) Less(i, j int) bool {
-	return d[i].id < d[j].id
+	return d[j].firstSeen.After(d[i].firstSeen)
 }
 
 // swaps the devices at index i and j
@@ -68,6 +68,8 @@ type devContent struct {
 	localName        string
 	companyIdent     uint16
 	lastSeen         time.Time
+	firstSeen        time.Time
+	timesSeen        int
 }
 
 // Active scanner. scans for new devices and passes them back down it's return path.
@@ -87,7 +89,9 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
 					adapter.StopScan()
 					return
 				default:
-					returnPath <- device
+					if isFindMyDevice(device.ManufacturerData()) {
+						returnPath <- device
+					}
 				}
 			})
 			if err != nil {
@@ -120,6 +124,16 @@ func (s *scanner) startScan() {
 			return
 		// recieve devices from the scanner and store them in the map.
 		case device := <-returnPath:
+			// if the value already exist, only update the last seen time.
+			if value, ok := s.devices.Load(device.Address.String()); ok {
+				devContentEntry := value.(map[string]devContent)[device.Address.String()]
+				devContentEntry.lastSeen = time.Now()
+				devContentEntry.timesSeen++
+				s.devices.Store(device.Address.String(), map[string]devContent{
+					device.Address.String(): devContentEntry,
+				})
+				continue
+			}
 			s.devices.Store(device.Address.String(), map[string]devContent{
 				device.Address.String(): {
 					id:               device.Address.String(),
@@ -127,6 +141,8 @@ func (s *scanner) startScan() {
 					localName:        device.LocalName(),
 					companyIdent:     getCompanyIdent(device.ManufacturerData()),
 					lastSeen:         time.Now(),
+					firstSeen:        time.Now(),
+					timesSeen:        1,
 				},
 			})
 			s.count++

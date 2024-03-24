@@ -1,5 +1,7 @@
 # findmyBLEscanner
 **Objective**
+> FindMy Device Scanner: Shows you what Apple Find my devices have been in your vecinity for a length of time.
+
 > Application is tested on `Windows`, `Linux`, and `mac` and works on both. \
 > `Windows` has an annoying flicker. I'm not sure what a good method of dealing with the screen buffering is.
 

@@ -11,7 +11,7 @@ Bluetooth device scanner in two routines
 
 **Screenshot**
 
-![scanner screenshot](scannerpic.png)
+![scanner screenshot](demo.png)
 
 
 > Below is an AI generated breakdown of how this code works.

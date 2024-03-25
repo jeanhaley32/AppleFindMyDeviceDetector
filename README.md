@@ -1,8 +1,8 @@
 # Apple-FindMy device detector
 
 **Kudos**
-- This program is based on information found withint this extremely useful `Air tag` breakdown by Adam Catley [link](https://adamcatley.com/AirTag.html)
-- Device Company UUIDs are resolved from The Bluetooth.com assigned numbers list, where they provide a useful, digestible `YAML` file [link](https://www.bluetooth.com/specifications/assigned-numbers/) 
+- [Adam Catley AirTag](https://adamcatley.com/AirTag.html) - Extremely useful Air tag breakdown with information compiled by Adam Catley 
+- [bluetooth assigne-numbers](https://www.bluetooth.com/specifications/assigned-numbers/) - Bluetooth.com assigned numbers list, used for resolving Company UUIDs
 
 **Objective**
 > FindMy Device Scanner: Shows you what Apple Find my devices have been in your vecinity for a length of time.

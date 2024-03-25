@@ -4,6 +4,7 @@ go 1.21.5
 
 require (
 	github.com/jedib0t/go-pretty/v6 v6.5.5
+	golang.org/x/crypto v0.12.0
 	gopkg.in/yaml.v2 v2.4.0
 	tinygo.org/x/bluetooth v0.8.0
 )
@@ -19,4 +20,5 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/tinygo-org/cbgo v0.0.4 // indirect
 	golang.org/x/sys v0.18.0 // indirect
+	golang.org/x/term v0.16.0 // indirect
 )

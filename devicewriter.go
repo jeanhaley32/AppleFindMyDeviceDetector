@@ -50,6 +50,11 @@ func (d *screenWriter) execute() {
 }
 
 func (d *screenWriter) Write(devs []devContent) {
+	termHeight, err := getTerminalHeight()
+	if err != nil {
+		termHeight = 15
+	}
+	rowBuff := 5
 	// fmt.Println("writer: writing devices to screen...")
 	d.ptab.AppendHeader(table.Row{
 		fmt.Sprintf("Unique Apple FindMy Devices: %v", len(devs)),
@@ -57,7 +62,7 @@ func (d *screenWriter) Write(devs []devContent) {
 	d.ptab.SetStyle(table.StyleColoredBlackOnCyanWhite)
 	d.ptab.AppendSeparator()
 	d.ptab.AppendRow(d.header)
-	for _, v := range devs[:min(len(devs), 10)] {
+	for _, v := range devs[:min(len(devs), termHeight-rowBuff)] {
 		if isFindMyDevice(v.manufacturerData) {
 			companyName := resolveCompanyIdent(&cmap, v.companyIdent)
 			localName := v.localName

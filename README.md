@@ -1,4 +1,4 @@
-# findmyBLEscanner
+# Apple-FindMy device detector
 **Objective**
 > FindMy Device Scanner: Shows you what Apple Find my devices have been in your vecinity for a length of time.
 

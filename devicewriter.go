@@ -98,7 +98,7 @@ func (d *screenWriter) Write(devs []devContent) {
 				),
 				v.TimesSeen(),
 			})
-		}g
+		}
 	}
 	d.ptab.AppendRow(table.Row{
 		"...",

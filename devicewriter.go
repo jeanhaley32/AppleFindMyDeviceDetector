@@ -7,6 +7,11 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
+)
+
+var (
+	header = table.Row{"Dev ID", "Manufacturer", "Manufacturer Data", "AirTag", "registered", "First:Last:Delta", "Times Seen"}
 )
 
 type screenWriter struct {
@@ -63,29 +68,47 @@ func (d *screenWriter) Write(devs []devContent) {
 	d.ptab.AppendSeparator()
 	d.ptab.AppendRow(d.header)
 	for _, v := range devs[:min(len(devs), termHeight-rowBuff)] {
-		if isFindMyDevice(v.manufacturerData) {
-			companyName := resolveCompanyIdent(&cmap, v.companyIdent)
-			localName := v.localName
-			findMyDevice := isFindMyDevice(v.manufacturerData)
-			firstSeen := time.Since(v.firstSeen)
-			lastSeen := time.Since(v.lastSeen)
-			d.ptab.AppendRow(table.Row{
-				fmt.Sprintf("%v", v.id),
-				localName,
-				companyName,
-				findMyDevice,
-				fmt.Sprintf("%.0fs", firstSeen.Truncate(time.Second).Seconds()),
-				fmt.Sprintf("%.0fs", lastSeen.Truncate(time.Second).Seconds()),
-				v.timesSeen,
-			})
+		AirTag := ""
+		if v.isAppleAirTag() {
+			AirTag = "*"
 		}
+		registered := ""
+		if v.isRegistered() {
+			registered = "*"
+		}
+		var vlist []string
+		for _, b := range v.ManufacturerData() {
+			if len(b) > 0 {
+				for _, i := range b {
+					vlist = append(vlist, fmt.Sprintf("%X", i))
+				}
+			} else {
+				d.ptab.AppendRow(table.Row{"None"})
+			}
+			d.ptab.AppendRow(table.Row{
+				fmt.Sprintf("...%X", v.AddressString()[len(v.AddressString())-8:]),
+				fmt.Sprintf("%v", resolveCompanyIdent(&cmap, v.CompanyIdent())),
+				fmt.Sprintf("%v: %v", vlist, len(vlist)),
+				AirTag,
+				registered,
+				fmt.Sprintf("%v:%v:%v",
+					time.Since(v.FirstSeen()).Round(time.Second),
+					time.Since(v.LastSeen()).Round(time.Second),
+					time.Since(v.FirstSeen()).Round(time.Second)-time.Since(v.LastSeen()).Round(time.Second),
+				),
+				v.TimesSeen(),
+			})
+		}g
 	}
 	d.ptab.AppendRow(table.Row{
 		"...",
 	})
+	d.ptab.SetColumnConfigs([]table.ColumnConfig{
+		{Number: 4, Align: text.AlignCenter},
+		{Number: 5, Align: text.AlignCenter},
+	})
+
 	d.ptab.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})
-	// Set the table style.
-	// d.ptab.SetStyle(table.StyleColoredBright)
 	// clears the screen.
 	clearScreen()
 	// // Render the table.

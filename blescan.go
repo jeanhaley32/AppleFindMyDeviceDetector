@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"reflect"
@@ -12,16 +13,25 @@ import (
 )
 
 const (
-	scanRate       = 100 * time.Millisecond  // rate at which to scan for devices.
-	scanBufferSize = 100                     // buffer size for the scan channel.
-	scanLength     = 1900 * time.Millisecond // length of time to scan for devices.
-	writeTime      = 10 * time.Second        // rate at which to write devices to the ingest path.
-	trimTime       = 1 * time.Second         // rate at which to trim the map of old devices.
-	oldestDevice   = 60 * time.Second        // time to keep a device in the map.
+	scanRate                 = 100 * time.Millisecond  // rate at which to scan for devices.
+	scanBufferSize           = 100                     // buffer size for the scan channel.
+	scanLength               = 1900 * time.Millisecond // length of time to scan for devices.
+	writeTime                = 10 * time.Second        // rate at which to write devices to the ingest path.
+	trimTime                 = 1 * time.Second         // rate at which to trim the map of old devices.
+	oldestDevice             = 60 * time.Second        // time to keep a device in the map.
+	adManSpecData            = byte(0xFF)              // 0xFF is the AD type for manufacturer specific data.
+	appleIdentifier          = byte(0x004C)            // 0x004C is the company identifier for Apple.
+	findMyNetworkBroadcastID = byte(0x12)              // 0x12 is the broadcast ID for the FindMy network.
+	unregisteredFindMyDevice = byte(0x07)              // 0x07 is the broadcast ID for the FindMy network broadcast by an unregistered airtag.
+	AirTagPayloadLength      = byte(0x19)              // 0x19 is the length of the AirTag payload.
 )
 
 var (
 	lastSent []devContent
+	findMy   map[string][]byte = map[string][]byte{
+		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
+		"payloadLength": {AirTagPayloadLength},
+	}
 )
 
 type scanner struct {
@@ -63,25 +73,66 @@ type ingestPath chan []devContent
 
 // device content
 type devContent struct {
-	id               string
-	manufacturerData manData
-	localName        string
-	companyIdent     uint16
-	lastSeen         time.Time
-	firstSeen        time.Time
-	timesSeen        int
+	device    bluetooth.ScanResult
+	lastSeen  time.Time
+	firstSeen time.Time
+	timesSeen int
+}
+
+// Returns the first time the device was seen.
+func (d devContent) FirstSeen() time.Time {
+	return d.firstSeen
+}
+
+// Returns the last time the device was seen.
+func (d devContent) LastSeen() time.Time {
+	return d.lastSeen
+}
+
+// Returns the number of times the device was seen.
+func (d devContent) TimesSeen() int {
+	return d.timesSeen
+}
+
+// Returns the device.
+func (d devContent) Device() bluetooth.ScanResult {
+	return d.device
+}
+
+// Returns the device address.
+func (d devContent) Address() bluetooth.Address {
+	return d.device.Address
+}
+
+// Returns the device address as a string.
+func (d devContent) AddressString() string {
+	return d.device.Address.String()
+}
+
+func (d devContent) ManufacturerData() map[uint16][]byte {
+	return d.device.ManufacturerData()
+}
+
+// returns the device's local name.
+func (d devContent) LocalName() string {
+	return d.device.LocalName()
+}
+
+// returns the device's company uint16 identifier.
+func (d devContent) CompanyIdent() uint16 {
+	return getCompanyIdent(d.ManufacturerData())
 }
 
 // Active scanner. scans for new devices and passes them back down it's return path.
 func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
-	// check for signal to stop scanning.
 	for {
+		// set a new timer to start scanning.
 		startScanTimer := time.NewTimer(scanRate)
 		select {
 		case <-s.quit:
 			s.wg.Done()
 			return
-		case <-startScanTimer.C:
+		case <-startScanTimer.C: // start scanning for devices.
 			stopScanTimer := time.NewTimer(scanLength)
 			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 				select {
@@ -89,9 +140,7 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
 					adapter.StopScan()
 					return
 				default:
-					if isFindMyDevice(device.ManufacturerData()) {
-						returnPath <- device
-					}
+					returnPath <- device // pass the device back to the scanner.
 				}
 			})
 			if err != nil {
@@ -124,7 +173,14 @@ func (s *scanner) startScan() {
 			return
 		// recieve devices from the scanner and store them in the map.
 		case device := <-returnPath:
-			// if the value already exist, only update the last seen time.
+			devContentEntry := devContent{
+				device: device,
+			}
+			// if the device is not an Apple FindMy device, skip it.
+			if !devContentEntry.isFindMyDevice() {
+				continue
+			}
+			// if the device has been seen before, update the last seen time and increment the times seen.
 			if value, ok := s.devices.Load(device.Address.String()); ok {
 				devContentEntry := value.(map[string]devContent)[device.Address.String()]
 				devContentEntry.lastSeen = time.Now()
@@ -134,17 +190,16 @@ func (s *scanner) startScan() {
 				})
 				continue
 			}
+			// if the device is new, add it to the map.
 			s.devices.Store(device.Address.String(), map[string]devContent{
 				device.Address.String(): {
-					id:               device.Address.String(),
-					manufacturerData: device.ManufacturerData(),
-					localName:        device.LocalName(),
-					companyIdent:     getCompanyIdent(device.ManufacturerData()),
-					lastSeen:         time.Now(),
-					firstSeen:        time.Now(),
-					timesSeen:        1,
+					device:    device,
+					lastSeen:  time.Now(),
+					firstSeen: time.Now(),
+					timesSeen: 1,
 				},
 			})
+			// increment the count of devices.
 			s.count++
 		// pass a list of devices to the writer.
 		case <-writeTicker.C:
@@ -213,4 +268,50 @@ func (s *scanner) sortAndPass() DevContentList {
 // compares and returns true if the two []devContent slices are equal.
 func areSlicesEqual(listOne, listTwo []devContent) bool {
 	return reflect.DeepEqual(listOne, listTwo)
+}
+
+// Checks if a device is potentiall an Apple AirTag.
+func (d *devContent) isAppleAirTag() bool {
+	if len(d.ManufacturerData()) == 0 {
+		return false
+	}
+	if val, ok := d.ManufacturerData()[uint16(appleIdentifier)]; ok {
+		if len(val) > 0 {
+			// check if the first byte is a FindMy network broadcast ID. And the second byte is the correct payload length.
+			if bytes.Contains(findMy["payloadType"], val[0:1]) && bytes.Equal(findMy["payloadLength"], val[1:2]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Checks if a device is potentially an Apple "FindMy" device.
+func (d *devContent) isFindMyDevice() bool {
+	var findMy map[string][]byte = map[string][]byte{
+		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
+		"payloadLength": {AirTagPayloadLength},
+	}
+	// Check if the device is broadcasting any manufacterer specific data.
+	if len(d.ManufacturerData()) == 0 {
+		return false
+	}
+	// pulls Apple manufacturer data from the device.
+	if val, ok := d.ManufacturerData()[uint16(appleIdentifier)]; ok {
+		if len(val) > 0 {
+			// Looks for a "findMy" AD type.
+			if bytes.Contains(findMy["payloadType"], val[0:1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Check if AirTag is registered or unregistered.
+func (d devContent) isRegistered() bool {
+	if len(d.ManufacturerData()) == 0 || !d.isAppleAirTag() {
+		return false
+	}
+	return d.ManufacturerData()[uint16(appleIdentifier)][0] != unregisteredFindMyDevice
 }

@@ -58,19 +58,6 @@ func ingestCorpDevices(loc string) CorpIdentMap {
 	return cmap
 }
 
-// checks if byte 0 is the FindMy network broadcast ID.
-func isFindMyDevice(b map[uint16][]byte) bool {
-	if len(b) == 0 {
-		return false
-	}
-	for _, v := range b {
-		if v[0] == findMyNetworkBroadcastID {
-			return true
-		}
-	}
-	return false
-}
-
 func getCompanyIdent(md manData) uint16 {
 	if len(md) > 0 {
 		for manId := range md {

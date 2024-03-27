@@ -1,4 +1,9 @@
-# findmyBLEscanner
+# Apple-FindMy device detector
+
+**Kudos**
+- [Adam Catley AirTag](https://adamcatley.com/AirTag.html) - Extremely useful Air tag breakdown with information compiled by Adam Catley 
+- [bluetooth assigned-numbers lists](https://www.bluetooth.com/specifications/assigned-numbers/) - Bluetooth.com assigned numbers list, used for resolving Company UUIDs
+
 **Objective**
 > FindMy Device Scanner: Shows you what Apple Find my devices have been in your vecinity for a length of time.
 

@@ -13,17 +13,17 @@ import (
 )
 
 const (
-	scanRate                 = 100 * time.Millisecond  // rate at which to scan for devices.
-	scanBufferSize           = 100                     // buffer size for the scan channel.
-	scanLength               = 1900 * time.Millisecond // length of time to scan for devices.
-	writeTime                = 10 * time.Second        // rate at which to write devices to the ingest path.
-	trimTime                 = 1 * time.Second         // rate at which to trim the map of old devices.
-	oldestDevice             = 60 * time.Second        // time to keep a device in the map.
-	adManSpecData            = byte(0xFF)              // 0xFF is the AD type for manufacturer specific data.
-	appleIdentifier          = byte(0x004C)            // 0x004C is the company identifier for Apple.
-	findMyNetworkBroadcastID = byte(0x12)              // 0x12 is the broadcast ID for the FindMy network.
-	unregisteredFindMyDevice = byte(0x07)              // 0x07 is the broadcast ID for the FindMy network broadcast by an unregistered airtag.
-	AirTagPayloadLength      = byte(0x19)              // 0x19 is the length of the AirTag payload.
+	scanRate                 = 50 * time.Millisecond  // rate at which to scan for devices.
+	scanBufferSize           = 500                    // buffer size for the scan channel.
+	scanLength               = 200 * time.Millisecond // length of time to scan for devices.
+	writeTime                = 10 * time.Second       // rate at which to write devices to the ingest path.
+	trimTime                 = 1 * time.Second        // rate at which to trim the map of old devices.
+	oldestDevice             = 24 * time.Hour         // time to keep a device in the map.
+	adManSpecData            = byte(0xFF)             // 0xFF is the AD type for manufacturer specific data.
+	appleIdentifier          = byte(0x004C)           // 0x004C is the company identifier for Apple.
+	findMyNetworkBroadcastID = byte(0x12)             // 0x12 is the broadcast ID for the FindMy network.
+	unregisteredFindMyDevice = byte(0x07)             // 0x07 is the broadcast ID for the FindMy network broadcast by an unregistered airtag.
+	AirTagPayloadLength      = byte(0x19)             // 0x19 is the length of the AirTag payload.
 )
 
 var (
@@ -35,41 +35,45 @@ var (
 )
 
 type scanner struct {
-	wg      *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
-	adptr   *bluetooth.Adapter // The adapter to use for scanning.
-	devices *sync.Map          // The map to store the devices.
-	count   int                // The number of devices found.
-	start   time.Time          // The time the scan started.
-	quit    chan any           // Channel to signal the scan to stop.
-	ingPath ingestPath         // Channel to ingest the devices.
+	wg        *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
+	adptr     *bluetooth.Adapter // The adapter to use for scanning.
+	devices   *sync.Map          // The map to store the devices.
+	count     int                // The number of devices found.
+	start     time.Time          // The time the scan started.
+	quit      chan any           // Channel to signal the scan to stop.
+	ingPath   ingestPath         // Channel to ingest the devices.
+	scanCount int                // The number of scans that have been performed.
 }
 
 // list of devices
-type DevContentList []devContent
+type DevContentList struct {
+	devContent []devContent
+	scanCount  int
+}
 
 // returns the length of the list
 // used to satisfy the sort.Interface
 func (d DevContentList) Len() int {
-	return len(d)
+	return len(d.devContent)
 }
 
 // return true if the device id is less than the device id at index j
 // used to satisfy the sort.Interface
 func (d DevContentList) Less(i, j int) bool {
-	return d[j].firstSeen.After(d[i].firstSeen)
+	return d.devContent[j].firstSeen.After(d.devContent[i].firstSeen)
 }
 
 // swaps the devices at index i and j
 // used to satisfy the sort.Interface
 func (d DevContentList) Swap(i, j int) {
-	d[i], d[j] = d[j], d[i]
+	d.devContent[i], d.devContent[j] = d.devContent[j], d.devContent[i]
 }
 
 // store for bluetooth device Manufacturer specific data
 type manData map[uint16][]byte
 
 // ingestion path for devices.
-type ingestPath chan []devContent
+type ingestPath chan DevContentList
 
 // device content
 type devContent struct {
@@ -124,19 +128,24 @@ func (d devContent) CompanyIdent() uint16 {
 }
 
 // Active scanner. scans for new devices and passes them back down it's return path.
-func (s *scanner) scan(returnPath chan bluetooth.ScanResult) {
+func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan any) {
+	s.scanCount = 0
 	for {
 		// set a new timer to start scanning.
 		startScanTimer := time.NewTimer(scanRate)
+		defer startScanTimer.Stop()
 		select {
 		case <-s.quit:
 			s.wg.Done()
 			return
 		case <-startScanTimer.C: // start scanning for devices.
 			stopScanTimer := time.NewTimer(scanLength)
+			defer stopScanTimer.Stop()
 			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 				select {
 				case <-stopScanTimer.C:
+					s.scanCount++
+					writeTrigger <- interface{}(nil)
 					adapter.StopScan()
 					return
 				default:
@@ -162,9 +171,9 @@ func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map,
 func (s *scanner) startScan() {
 	s.count = 0
 	returnPath := make(chan bluetooth.ScanResult, scanBufferSize)
-	writeTicker := time.NewTicker(writeTime) // ticker to write devices to the ingest path.
+	writeTrigger := make(chan any, 1)
 	trimTicker := time.NewTicker(trimTime)
-	go s.scan(returnPath)
+	go s.scan(returnPath, writeTrigger)
 	for {
 		select {
 		// check for the signal to stop scanning.
@@ -202,11 +211,12 @@ func (s *scanner) startScan() {
 			// increment the count of devices.
 			s.count++
 		// pass a list of devices to the writer.
-		case <-writeTicker.C:
+		case <-writeTrigger:
 			sendList := s.sortAndPass()
+			sendList.scanCount = s.scanCount
 			// only send the list if it has changed.
-			if !areSlicesEqual(sendList, lastSent) {
-				lastSent = sendList
+			if !areSlicesEqual(sendList.devContent, lastSent) {
+				lastSent = sendList.devContent
 				s.ingPath <- sendList
 			}
 		// start cleaning up the map of old devices.
@@ -256,7 +266,7 @@ func (s *scanner) sortAndPass() DevContentList {
 	sortedList := DevContentList{}
 	s.devices.Range(func(k, v interface{}) bool {
 		for _, dv := range v.(map[string]devContent) {
-			sortedList = append(sortedList, dv)
+			sortedList.devContent = append(sortedList.devContent, dv)
 		}
 		return true
 	})

@@ -53,6 +53,21 @@ type device struct {
 	timesSeen int
 }
 
+// time since first seen
+func (d device) sinceFirstSeen() time.Duration {
+	return time.Since(d.firstSeen)
+}
+
+// time since last seen
+func (d device) sinceLastSeen() time.Duration {
+	return time.Since(d.lastSeen)
+}
+
+// returns the time since the device was first detected and the last time it was detected.
+func (d device) detectedFor() time.Duration {
+	return d.lastSeen.Sub(d.firstSeen)
+}
+
 // list of devices
 type deviceList struct {
 	devices   []device

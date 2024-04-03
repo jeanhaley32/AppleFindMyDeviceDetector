@@ -20,7 +20,7 @@ type screenWriter struct {
 	header   table.Row
 	quit     chan any
 	readPath ingestPath
-	dc       DevContentList
+	dc       deviceList
 }
 
 func newWriter(wg *sync.WaitGroup, f *os.File, header table.Row, q chan any, r ingestPath) *screenWriter {
@@ -63,11 +63,11 @@ func (d *screenWriter) Write() {
 	}
 	rowBuff := 5
 	// fmt.Println("writer: writing devices to screen...")
-	d.ptab.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(d.dc.devContent), d.dc.scanCount)})
+	d.ptab.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(d.dc.devices), d.dc.scanCount)})
 	d.ptab.SetStyle(table.StyleColoredBlackOnCyanWhite)
 	d.ptab.AppendSeparator()
 	d.ptab.AppendRow(d.header)
-	for _, v := range d.dc.devContent[:min(len(d.dc.devContent), termHeight-rowBuff)] {
+	for _, v := range d.dc.devices[:min(len(d.dc.devices), termHeight-rowBuff)] {
 		PercentSeen := 0
 		if d.dc.scanCount > 0 {
 			PercentSeen = v.timesSeen * 100 / d.dc.scanCount
@@ -90,9 +90,10 @@ func (d *screenWriter) Write() {
 				d.ptab.AppendRow(table.Row{"None"})
 			}
 			d.ptab.AppendRow(table.Row{
-				fmt.Sprintf("...%X", v.AddressString()[len(v.AddressString())-8:]),
+				// fmt.Sprintf("...%X", v.AddressString()[len(v.AddressString())-8:]),
+				fmt.Sprintf("%v", v.d.Address.Get16Bit()),
 				fmt.Sprintf("%v", resolveCompanyIdent(&cmap, v.CompanyIdent())),
-				fmt.Sprintf("%v...: %v", vlist[:min(len(vlist)/2, 4)], len(vlist)),
+				fmt.Sprintf("%v: %v", vlist, len(vlist)), //vlist[:min(len(vlist)/2, 4)], len(vlist)
 				AirTag,
 				registered,
 				fmt.Sprintf("%v:%v:%v",

@@ -27,7 +27,7 @@ const (
 )
 
 var (
-	lastSent []devContent
+	lastSent []device
 	findMy   map[string][]byte = map[string][]byte{
 		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
 		"payloadLength": {AirTagPayloadLength},
@@ -45,85 +45,85 @@ type scanner struct {
 	scanCount int                // The number of scans that have been performed.
 }
 
+// device content
+type device struct {
+	d         bluetooth.ScanResult
+	lastSeen  time.Time
+	firstSeen time.Time
+	timesSeen int
+}
+
 // list of devices
-type DevContentList struct {
-	devContent []devContent
-	scanCount  int
+type deviceList struct {
+	devices   []device
+	scanCount int
 }
 
 // returns the length of the list
 // used to satisfy the sort.Interface
-func (d DevContentList) Len() int {
-	return len(d.devContent)
+func (d deviceList) Len() int {
+	return len(d.devices)
 }
 
 // return true if the device id is less than the device id at index j
 // used to satisfy the sort.Interface
-func (d DevContentList) Less(i, j int) bool {
-	return d.devContent[j].firstSeen.After(d.devContent[i].firstSeen)
+func (d deviceList) Less(i, j int) bool {
+	return d.devices[j].firstSeen.After(d.devices[i].firstSeen)
 }
 
 // swaps the devices at index i and j
 // used to satisfy the sort.Interface
-func (d DevContentList) Swap(i, j int) {
-	d.devContent[i], d.devContent[j] = d.devContent[j], d.devContent[i]
+func (d deviceList) Swap(i, j int) {
+	d.devices[i], d.devices[j] = d.devices[j], d.devices[i]
 }
 
 // store for bluetooth device Manufacturer specific data
 type manData map[uint16][]byte
 
 // ingestion path for devices.
-type ingestPath chan DevContentList
-
-// device content
-type devContent struct {
-	device    bluetooth.ScanResult
-	lastSeen  time.Time
-	firstSeen time.Time
-	timesSeen int
-}
+type ingestPath chan deviceList
 
 // Returns the first time the device was seen.
-func (d devContent) FirstSeen() time.Time {
+func (d device) FirstSeen() time.Time {
 	return d.firstSeen
 }
 
 // Returns the last time the device was seen.
-func (d devContent) LastSeen() time.Time {
+func (d device) LastSeen() time.Time {
 	return d.lastSeen
 }
 
 // Returns the number of times the device was seen.
-func (d devContent) TimesSeen() int {
+func (d device) TimesSeen() int {
 	return d.timesSeen
 }
 
 // Returns the device.
-func (d devContent) Device() bluetooth.ScanResult {
-	return d.device
+func (d device) Device() bluetooth.ScanResult {
+	return d.d
 }
 
 // Returns the device address.
-func (d devContent) Address() bluetooth.Address {
-	return d.device.Address
+func (d device) Address() bluetooth.Address {
+	return d.d.Address
 }
 
 // Returns the device address as a string.
-func (d devContent) AddressString() string {
-	return d.device.Address.String()
+func (d device) AddressString() string {
+	return d.d.Address.String()
 }
 
-func (d devContent) ManufacturerData() map[uint16][]byte {
-	return d.device.ManufacturerData()
+func (d device) ManufacturerData() map[uint16][]byte {
+	return d.d.ManufacturerData()
 }
 
 // returns the device's local name.
-func (d devContent) LocalName() string {
-	return d.device.LocalName()
+func (d device) LocalName() string {
+	return d.d.LocalName()
 }
 
 // returns the device's company uint16 identifier.
-func (d devContent) CompanyIdent() uint16 {
+func (d device) CompanyIdent() uint16 {
 	return getCompanyIdent(d.ManufacturerData())
 }
 
@@ -181,28 +181,28 @@ func (s *scanner) startScan() {
 			s.wg.Done()
 			return
 		// recieve devices from the scanner and store them in the map.
-		case device := <-returnPath:
-			devContentEntry := devContent{
-				device: device,
+		case dev := <-returnPath:
+			devicesEntry := device{
+				d: dev,
 			}
 			// if the device is not an Apple FindMy device, skip it.
-			if !devContentEntry.isFindMyDevice() {
+			if !devicesEntry.isFindMyDevice() {
 				continue
 			}
 			// if the device has been seen before, update the last seen time and increment the times seen.
-			if value, ok := s.devices.Load(device.Address.String()); ok {
-				devContentEntry := value.(map[string]devContent)[device.Address.String()]
-				devContentEntry.lastSeen = time.Now()
-				devContentEntry.timesSeen++
-				s.devices.Store(device.Address.String(), map[string]devContent{
-					device.Address.String(): devContentEntry,
+			if value, ok := s.devices.Load(dev.Address.String()); ok {
+				deviceEntry := value.(map[string]device)[dev.Address.String()]
+				deviceEntry.lastSeen = time.Now()
+				deviceEntry.timesSeen++
+				s.devices.Store(dev.Address.String(), map[string]device{
+					dev.Address.String(): deviceEntry,
 				})
 				continue
 			}
 			// if the device is new, add it to the map.
-			s.devices.Store(device.Address.String(), map[string]devContent{
-				device.Address.String(): {
-					device:    device,
+			s.devices.Store(dev.Address.String(), map[string]device{
+				dev.Address.String(): {
+					d:         dev,
 					lastSeen:  time.Now(),
 					firstSeen: time.Now(),
 					timesSeen: 1,
@@ -215,8 +215,8 @@ func (s *scanner) startScan() {
 			sendList := s.sortAndPass()
 			sendList.scanCount = s.scanCount
 			// only send the list if it has changed.
-			if !areSlicesEqual(sendList.devContent, lastSent) {
-				lastSent = sendList.devContent
+			if !areSlicesEqual(sendList.devices, lastSent) {
+				lastSent = sendList.devices
 				s.ingPath <- sendList
 			}
 		// start cleaning up the map of old devices.
@@ -249,7 +249,7 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 func (s *scanner) TrimMap() {
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[string]devContent) {
+		for _, dv := range v.(map[string]device) {
 			if time.Since(dv.lastSeen) > oldestDevice {
 				s.devices.Delete(k)
 				removed++
@@ -261,12 +261,12 @@ func (s *scanner) TrimMap() {
 }
 
 // returns a sorted list of devices.
-func (s *scanner) sortAndPass() DevContentList {
+func (s *scanner) sortAndPass() deviceList {
 
-	sortedList := DevContentList{}
+	sortedList := deviceList{}
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[string]devContent) {
-			sortedList.devContent = append(sortedList.devContent, dv)
+		for _, dv := range v.(map[string]device) {
+			sortedList.devices = append(sortedList.devices, dv)
 		}
 		return true
 	})
@@ -275,13 +275,13 @@ func (s *scanner) sortAndPass() DevContentList {
 	return sortedList
 }
 
-// compares and returns true if the two []devContent slices are equal.
-func areSlicesEqual(listOne, listTwo []devContent) bool {
+// compares and returns true if the two []devices slices are equal.
+func areSlicesEqual(listOne, listTwo []device) bool {
 	return reflect.DeepEqual(listOne, listTwo)
 }
 
 // Checks if a device is potentiall an Apple AirTag.
-func (d *devContent) isAppleAirTag() bool {
+func (d *device) isAppleAirTag() bool {
 	if len(d.ManufacturerData()) == 0 {
 		return false
 	}
@@ -297,7 +297,7 @@ func (d *devContent) isAppleAirTag() bool {
 }
 
 // Checks if a device is potentially an Apple "FindMy" device.
-func (d *devContent) isFindMyDevice() bool {
+func (d *device) isFindMyDevice() bool {
 	var findMy map[string][]byte = map[string][]byte{
 		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
 		"payloadLength": {AirTagPayloadLength},
@@ -319,7 +319,7 @@ func (d *devContent) isFindMyDevice() bool {
 }
 
 // Check if AirTag is registered or unregistered.
-func (d devContent) isRegistered() bool {
+func (d device) isRegistered() bool {
 	if len(d.ManufacturerData()) == 0 || !d.isAppleAirTag() {
 		return false
 	}

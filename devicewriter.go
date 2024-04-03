@@ -91,7 +91,7 @@ func (d *screenWriter) Write() {
 			}
 			d.ptab.AppendRow(table.Row{
 				// fmt.Sprintf("...%X", v.AddressString()[len(v.AddressString())-8:]),
-				fmt.Sprintf("%v", v.d.Address.Get16Bit()),
+				fmt.Sprintf("%v", v.d.Address.String()),
 				fmt.Sprintf("%v", resolveCompanyIdent(&cmap, v.CompanyIdent())),
 				fmt.Sprintf("%v: %v", vlist, len(vlist)), //vlist[:min(len(vlist)/2, 4)], len(vlist)
 				AirTag,

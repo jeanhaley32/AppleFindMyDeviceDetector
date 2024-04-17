@@ -83,7 +83,7 @@ func (d deviceList) Len() int {
 // return true if the device id is less than the device id at index j
 // used to satisfy the sort.Interface
 func (d deviceList) Less(i, j int) bool {
-	return d.devices[j].firstSeen.After(d.devices[i].firstSeen)
+	return d.devices[j].detectedFor() < d.devices[i].detectedFor()
 }
 
 // swaps the devices at index i and j
@@ -201,7 +201,7 @@ func (s *scanner) startScan() {
 				d: dev,
 			}
 			// if the device is not an Apple FindMy device, skip it.
-			if !devicesEntry.isFindMyDevice() {
+			if !devicesEntry.isTrackingAirtag() {
 				continue
 			}
 			// if the device has been seen before, update the last seen time and increment the times seen.
@@ -307,6 +307,14 @@ func (d *device) isAppleAirTag() bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// Returns true if the device is a registered apple air tag
+func (d device) isTrackingAirtag() bool {
+	if d.isRegistered() && d.isAppleAirTag() {
+		return true
 	}
 	return false
 }

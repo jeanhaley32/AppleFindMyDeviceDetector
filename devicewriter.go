@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -55,10 +56,8 @@ func (d *screenWriter) execute() {
 			d.dc = devices
 			d.Write()
 		}
-	"log"
-	"os"
-	"sync"
-)
+	}
+}
 
 func min(a, b int) int {
 	if a < b {

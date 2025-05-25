@@ -1,15 +1,14 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/exec"
 	"runtime"
 
+	"fmt"
+
 	"golang.org/x/crypto/ssh/terminal"
 )
-
-import "fmt"
 
 // must is a helper function that wraps a call to a function returning an error and logs it if the error is non-nil.
 func must(action string, err error) error {

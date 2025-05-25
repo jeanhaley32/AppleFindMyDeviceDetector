@@ -11,11 +11,7 @@ var (
 )
 
 func main() {
-	var err error
-	cmap, err = ingestCorpDevices(companyIdentlocation)
-	if err != nil {
-		log.Fatalf("Failed to load company identifiers: %v", err)
-	}
+	cmap = ingestCorpDevices(companyIdentlocation)
 	ingp := make(ingestPath)
 	wg := sync.WaitGroup{}
 	// start the scanner in a go routine.
@@ -27,9 +23,7 @@ func main() {
 			ingp,
 			make(chan any),
 		)
-		if err != nil {
-			log.Fatalf("Failed to start BlueTooth Scanner: %v", err)
-		}
+		must("Failed to start BlueTooth Scanner", err)
 	}()
 	go func() {
 		// start the writer
@@ -38,11 +32,8 @@ func main() {
 			os.Stdout,
 			header,
 			ingp,
-			cmap,
 		)
-		if err != nil {
-			log.Fatalf("Failed to start writer: %v", err)
-		}
+		must("Failed to start writer", err)
 	}()
 	wg.Wait()
 	log.Printf("Scanner and writer have finished.")

@@ -9,14 +9,11 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-import "fmt"
-
 // must is a helper function that wraps a call to a function returning an error and logs it if the error is non-nil.
-func must(action string, err error) error {
+func must(action string, err error) {
 	if err != nil {
-		return fmt.Errorf("Failed to %s: %w", action, err)
+		log.Fatalf("Failed to %s: %v", action, err)
 	}
-	return nil
 }
 
 // Executes whichever clear command exists for the OS running this application

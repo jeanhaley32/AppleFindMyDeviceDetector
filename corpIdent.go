@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 
@@ -24,8 +23,8 @@ func resolveCompanyIdent(c *CorpIdentMap, t uint16) string {
 }
 
 // converts YAML list into a hashmap of Corporate identifiers
-func ingestCorpDevices(loc string) (CorpIdentMap, error) {
-	cmap := make(CorpIdentMap)
+func ingestCorpDevices(loc string) CorpIdentMap {
+	cmap = make(CorpIdentMap)
 	// define a map to hold individual company identifiers.
 	type CompanyIdentifier struct {
 		Value uint16 `yaml:"value"`
@@ -39,7 +38,7 @@ func ingestCorpDevices(loc string) (CorpIdentMap, error) {
 	// Open the file and read the contents.
 	file, err := os.Open(loc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open company identifiers file %s: %w", loc, err)
+		log.Fatal(err)
 	}
 	defer file.Close()
 	// Create a new YAML decoder.
@@ -50,13 +49,13 @@ func ingestCorpDevices(loc string) (CorpIdentMap, error) {
 	// Decode the file into the struct.
 	err = d.Decode(&c)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode company identifiers file %s: %w", loc, err)
+		log.Fatal(err)
 	}
 	// Convert YAML struct into a hashmap
 	for _, v := range c.CompanyIdentifiers {
 		cmap[v.Value] = v.Name
 	}
-	return cmap, nil
+	return cmap
 }
 
 func getCompanyIdent(md manData) uint16 {

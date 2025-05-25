@@ -43,7 +43,6 @@ type scanner struct {
 	quit      chan any           // Channel to signal the scan to stop.
 	ingPath   ingestPath         // Channel to ingest the devices.
 	scanCount int                // The number of scans that have been performed.
-	errChan   chan error         // Channel to send errors from the scan goroutine.
 }
 
 // device content
@@ -170,8 +169,6 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 			})
 			if err != nil {
 				log.Printf("failed to scan: %v\n", err)
-				s.errChan <- err
-				return
 			}
 
 		}
@@ -180,7 +177,7 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 
 // returns a new scan devices.
 func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map, q chan any) *scanner {
-	return &scanner{wg: wg, adptr: adptr, devices: devices, quit: q, errChan: make(chan error, 1)}
+	return &scanner{wg: wg, adptr: adptr, devices: devices, quit: q}
 }
 
 // Primary operation block of the scanner.
@@ -198,11 +195,6 @@ func (s *scanner) startScan() {
 		case <-s.quit:
 			s.wg.Done()
 			return
-		// receive errors from the scan goroutine.
-		case err := <-s.errChan:
-			log.Printf("Critical scanner error: %v. Stopping scanner.", err)
-			s.wg.Done() // Ensure WaitGroup is decremented if this goroutine exits prematurely.
-			return
 		// recieve devices from the scanner and store them in the map.
 		case dev := <-returnPath:
 			devicesEntry := device{
@@ -214,20 +206,23 @@ func (s *scanner) startScan() {
 			}
 			// if the device has been seen before, update the last seen time and increment the times seen.
 			if value, ok := s.devices.Load(dev.Address.String()); ok {
-				deviceEntry := value.(device)
+				deviceEntry := value.(map[string]device)[dev.Address.String()]
 				deviceEntry.lastSeen = time.Now()
 				deviceEntry.timesSeen++
-				s.devices.Store(dev.Address.String(), deviceEntry)
+				s.devices.Store(dev.Address.String(), map[string]device{
+					dev.Address.String(): deviceEntry,
+				})
 				continue
 			}
 			// if the device is new, add it to the map.
-			newDeviceEntry := device{
-				d:         dev,
-				lastSeen:  time.Now(),
-				firstSeen: time.Now(),
-				timesSeen: 1,
-			}
-			s.devices.Store(dev.Address.String(), newDeviceEntry)
+			s.devices.Store(dev.Address.String(), map[string]device{
+				dev.Address.String(): {
+					d:         dev,
+					lastSeen:  time.Now(),
+					firstSeen: time.Now(),
+					timesSeen: 1,
+				},
+			})
 			// increment the count of devices.
 			s.count++
 		// pass a list of devices to the writer.
@@ -269,10 +264,11 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 func (s *scanner) TrimMap() {
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
-		dv := v.(device)
-		if time.Since(dv.lastSeen) > oldestDevice {
-			s.devices.Delete(k)
-			removed++
+		for _, dv := range v.(map[string]device) {
+			if time.Since(dv.lastSeen) > oldestDevice {
+				s.devices.Delete(k)
+				removed++
+			}
 		}
 		return true
 	})
@@ -284,8 +280,9 @@ func (s *scanner) sortAndPass() deviceList {
 
 	sortedList := deviceList{}
 	s.devices.Range(func(k, v interface{}) bool {
-		dv := v.(device)
-		sortedList.devices = append(sortedList.devices, dv)
+		for _, dv := range v.(map[string]device) {
+			sortedList.devices = append(sortedList.devices, dv)
+		}
 		return true
 	})
 	sort.Sort(sortedList)
@@ -318,6 +315,28 @@ func (d *device) isAppleAirTag() bool {
 func (d device) isTrackingAirtag() bool {
 	if d.isRegistered() && d.isAppleAirTag() {
 		return true
+	}
+	return false
+}
+
+// Checks if a device is potentially an Apple "FindMy" device.
+func (d *device) isFindMyDevice() bool {
+	var findMy map[string][]byte = map[string][]byte{
+		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
+		"payloadLength": {AirTagPayloadLength},
+	}
+	// Check if the device is broadcasting any manufacterer specific data.
+	if len(d.ManufacturerData()) == 0 {
+		return false
+	}
+	// pulls Apple manufacturer data from the device.
+	if val, ok := d.ManufacturerData()[uint16(appleIdentifier)]; ok {
+		if len(val) > 0 {
+			// Looks for a "findMy" AD type.
+			if bytes.Contains(findMy["payloadType"], val[0:1]) {
+				return true
+			}
+		}
 	}
 	return false
 }

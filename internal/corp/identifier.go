@@ -1,30 +1,25 @@
-package main
+package corp
 
 import (
-	"log"
 	"os"
 
 	"gopkg.in/yaml.v2"
 )
 
-// map to hold the company identifiers.
+// CorpIdentMap holds the company identifiers.
 type CorpIdentMap map[uint16]string
 
-const (
-	companyIdentlocation = "company_identifiers.yaml"
-)
-
-// resolve coporate identity into a string
-func resolveCompanyIdent(c *CorpIdentMap, t uint16) string {
-	if val, ok := (*c)[t]; ok {
+// Resolve returns the company name for a given identifier.
+func (c CorpIdentMap) Resolve(t uint16) string {
+	if val, ok := c[t]; ok {
 		return val
 	}
 	return "Unknown"
 }
 
-// converts YAML list into a hashmap of Corporate identifiers
-func ingestCorpDevices(loc string) CorpIdentMap {
-	cmap = make(CorpIdentMap)
+// IngestCorpDevices converts a YAML list into a hashmap of Corporate identifiers.
+func IngestCorpDevices(loc string) (CorpIdentMap, error) {
+	cmap := make(CorpIdentMap)
 	// define a map to hold individual company identifiers.
 	type CompanyIdentifier struct {
 		Value uint16 `yaml:"value"`
@@ -38,7 +33,7 @@ func ingestCorpDevices(loc string) CorpIdentMap {
 	// Open the file and read the contents.
 	file, err := os.Open(loc)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer file.Close()
 	// Create a new YAML decoder.
@@ -49,20 +44,11 @@ func ingestCorpDevices(loc string) CorpIdentMap {
 	// Decode the file into the struct.
 	err = d.Decode(&c)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	// Convert YAML struct into a hashmap
 	for _, v := range c.CompanyIdentifiers {
 		cmap[v.Value] = v.Name
 	}
-	return cmap
-}
-
-func getCompanyIdent(md manData) uint16 {
-	if len(md) > 0 {
-		for manId := range md {
-			return manId
-		}
-	}
-	return 0
+	return cmap, nil
 }

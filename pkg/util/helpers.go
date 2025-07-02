@@ -1,4 +1,4 @@
-package main
+package util
 
 import (
 	"log"
@@ -9,16 +9,16 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-// must is a helper function that wraps a call to a function returning an error and logs it if the error is non-nil.
-func must(action string, err error) {
+// Must is a helper function that wraps a call to a function returning an error and logs it if the error is non-nil.
+func Must(action string, err error) {
 	if err != nil {
 		log.Fatalf("Failed to %s: %v", action, err)
 	}
 }
 
-// Executes whichever clear command exists for the OS running this application
+// ClearScreen executes whichever clear command exists for the OS running this application
 // Supports Linux, Windows, and Mac OS
-func clearScreen() {
+func ClearScreen() {
 	cmd := exec.Command("clear") // Linux or macOS
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/c", "cls") // Windows
@@ -27,10 +27,17 @@ func clearScreen() {
 	cmd.Run()
 }
 
-func getTerminalHeight() (int, error) {
+func GetTerminalHeight() (int, error) {
 	_, height, err := terminal.GetSize(0)
 	if err != nil {
 		return 0, err
 	}
 	return height, nil
+}
+
+func Min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

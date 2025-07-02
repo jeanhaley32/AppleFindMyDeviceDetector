@@ -1,6 +1,9 @@
-package main
+package writer
 
 import (
+	"airtagtracker/internal/corp"
+	"airtagtracker/internal/device"
+	"airtagtracker/pkg/util"
 	"fmt"
 	"os"
 	"sync"
@@ -14,36 +17,35 @@ var (
 	header = table.Row{"Dev ID", "Manufacturer", "Manufacturer Data", "AirTag", "registered", "First:Last:Delta", "Times Seen", "Percent Seen"}
 )
 
-type screenWriter struct {
+type ScreenWriter struct {
 	wg       *sync.WaitGroup
 	ptab     table.Writer
 	header   table.Row
 	quit     chan any
-	readPath ingestPath
-	dc       deviceList
+	readPath chan device.List
+	dc       device.List
+	cmap     corp.CorpIdentMap
 }
 
-func newWriter(wg *sync.WaitGroup, f *os.File, header table.Row, q chan any, r ingestPath) *screenWriter {
+func NewWriter(wg *sync.WaitGroup, f *os.File, header table.Row, q chan any, r chan device.List, cmap corp.CorpIdentMap) *ScreenWriter {
 	ptab := table.NewWriter()
 	ptab.SetTitle("Apple FindMy Devices")
 	ptab.SetOutputMirror(f)
-	return &screenWriter{
+	return &ScreenWriter{
 		wg:       wg,
 		ptab:     ptab,
 		header:   header,
 		readPath: r,
 		quit:     q,
+		cmap:     cmap,
 	}
 }
 
-func startWriter(wg *sync.WaitGroup, q chan any, f *os.File, header table.Row, readp ingestPath) error {
-	// create a new writer
-	w := newWriter(wg, f, header, q, readp)
-	go w.execute()
-	return nil
+func (d *ScreenWriter) Start() {
+	d.execute()
 }
 
-func (d *screenWriter) execute() {
+func (d *ScreenWriter) execute() {
 	for {
 		select {
 		case <-d.quit:
@@ -56,28 +58,28 @@ func (d *screenWriter) execute() {
 	}
 }
 
-func (d *screenWriter) Write() {
-	termHeight, err := getTerminalHeight()
+func (d *ScreenWriter) Write() {
+	termHeight, err := util.GetTerminalHeight()
 	if err != nil {
 		termHeight = 15
 	}
 	rowBuff := 5
 	// fmt.Println("writer: writing devices to screen...")
-	d.ptab.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(d.dc.devices), d.dc.scanCount)})
+	d.ptab.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(d.dc.Devices), d.dc.ScanCount)})
 	d.ptab.SetStyle(table.StyleColoredBlackOnCyanWhite)
 	d.ptab.AppendSeparator()
 	d.ptab.AppendRow(d.header)
-	for _, v := range d.dc.devices[:min(len(d.dc.devices), termHeight-rowBuff)] {
+	for _, v := range d.dc.Devices[:util.Min(len(d.dc.Devices), termHeight-rowBuff)] {
 		PercentSeen := 0
-		if d.dc.scanCount > 0 {
-			PercentSeen = v.timesSeen * 100 / d.dc.scanCount
+		if d.dc.ScanCount > 0 {
+			PercentSeen = v.TimesSeen * 100 / d.dc.ScanCount
 		}
 		AirTag := ""
-		if v.isAppleAirTag() {
+		if v.IsAppleAirTag() {
 			AirTag = "*"
 		}
 		registered := ""
-		if v.isRegistered() {
+		if v.IsRegistered() {
 			registered = "*"
 		}
 		var vlist []string
@@ -91,17 +93,17 @@ func (d *screenWriter) Write() {
 			}
 			d.ptab.AppendRow(table.Row{
 				// fmt.Sprintf("...%X", v.AddressString()[len(v.AddressString())-8:]),
-				fmt.Sprintf("%v", v.d.Address.String()),
-				fmt.Sprintf("%v", resolveCompanyIdent(&cmap, v.CompanyIdent())),
+				fmt.Sprintf("%v", v.D.Address.String()),
+				fmt.Sprintf("%v", d.cmap.Resolve(v.CompanyIdent())),
 				fmt.Sprintf("%v: %v", vlist, len(vlist)), //vlist[:min(len(vlist)/2, 4)], len(vlist)
 				AirTag,
 				registered,
 				fmt.Sprintf("%v:%v:%v",
-					v.sinceFirstSeen().Round(time.Second),
-					v.sinceLastSeen().Round(time.Second),
-					v.detectedFor().Round(time.Second),
+					v.SinceFirstSeen().Round(time.Second),
+					v.SinceLastSeen().Round(time.Second),
+					v.DetectedFor().Round(time.Second),
 				),
-				v.TimesSeen(),
+				v.TimesSeen,
 				fmt.Sprintf("%v%%", PercentSeen),
 			})
 		}
@@ -116,7 +118,7 @@ func (d *screenWriter) Write() {
 
 	d.ptab.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})
 	// clears the screen.
-	clearScreen()
+	util.ClearScreen()
 	// // Render the table.
 	d.ptab.Render()
 	// Reset the rows in the table.

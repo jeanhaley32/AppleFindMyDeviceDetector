@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	scanRate                 = 50 * time.Millisecond  // rate at which to scan for devices.
+	scanRate                 = 500 * time.Millisecond // rate at which to scan for devices.
 	scanBufferSize           = 500                    // buffer size for the scan channel.
 	scanLength               = 200 * time.Millisecond // length of time to scan for devices.
 	writeTime                = 10 * time.Second       // rate at which to write devices to the ingest path.
@@ -144,6 +144,7 @@ func (d device) CompanyIdent() uint16 {
 
 // Active scanner. scans for new devices and passes them back down it's return path.
 func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan any) {
+	log.Printf("[DEBUG] Starting active scanner loop")
 	s.scanCount = 0
 	for {
 		// set a new timer to start scanning.
@@ -151,23 +152,28 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 		defer startScanTimer.Stop()
 		select {
 		case <-s.quit:
+			log.Printf("[DEBUG] Scanner received quit signal, stopping scan loop")
 			s.wg.Done()
 			return
 		case <-startScanTimer.C: // start scanning for devices.
+			log.Printf("[DEBUG] Starting scan cycle #%d", s.scanCount+1)
 			stopScanTimer := time.NewTimer(scanLength)
 			defer stopScanTimer.Stop()
 			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 				select {
 				case <-stopScanTimer.C:
 					s.scanCount++
+					log.Printf("[DEBUG] Scan cycle #%d completed, triggering write operation", s.scanCount)
 					writeTrigger <- interface{}(nil)
 					adapter.StopScan()
 					return
 				default:
+					log.Printf("[DEBUG] Device detected: %s, RSSI: %d", device.Address.String(), device.RSSI)
 					returnPath <- device // pass the device back to the scanner.
 				}
 			})
 			if err != nil {
+				log.Printf("[DEBUG] Scan error occurred: %v", err)
 				log.Printf("failed to scan: %v\n", err)
 			}
 
@@ -177,6 +183,7 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 
 // returns a new scan devices.
 func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map, q chan any) *scanner {
+	log.Printf("[DEBUG] Creating new scanner instance")
 	return &scanner{wg: wg, adptr: adptr, devices: devices, quit: q}
 }
 
@@ -184,37 +191,51 @@ func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map,
 // Starts the scanner, listens for devices on the return path, stores them in map
 // periodically cleans up the map, and passes a sorted list of devices to the writer.
 func (s *scanner) startScan() {
+	log.Printf("[DEBUG] Starting primary scan operation block")
 	s.count = 0
 	returnPath := make(chan bluetooth.ScanResult, scanBufferSize)
 	writeTrigger := make(chan any, 1)
 	trimTicker := time.NewTicker(trimTime)
+	log.Printf("[DEBUG] Created channels and ticker - buffer size: %d, trim interval: %v", scanBufferSize, trimTime)
+
 	go s.scan(returnPath, writeTrigger)
+	log.Printf("[DEBUG] Launched scanner goroutine")
+
 	for {
 		select {
 		// check for the signal to stop scanning.
 		case <-s.quit:
+			log.Printf("[DEBUG] Primary scan loop received quit signal")
 			s.wg.Done()
 			return
 		// recieve devices from the scanner and store them in the map.
 		case dev := <-returnPath:
+			log.Printf("[DEBUG] Processing device from return path: %s", dev.Address.String())
 			devicesEntry := device{
 				d: dev,
 			}
 			// if the device is not an Apple FindMy device, skip it.
 			if !devicesEntry.isTrackingAirtag() {
+				log.Printf("[DEBUG] Device %s is not a tracking AirTag, skipping", dev.Address.String())
 				continue
 			}
+			log.Printf("[DEBUG] Device %s identified as tracking AirTag", dev.Address.String())
+
 			// if the device has been seen before, update the last seen time and increment the times seen.
 			if value, ok := s.devices.Load(dev.Address.String()); ok {
+				log.Printf("[DEBUG] Updating existing device %s", dev.Address.String())
 				deviceEntry := value.(map[string]device)[dev.Address.String()]
+				oldTimesSeen := deviceEntry.timesSeen
 				deviceEntry.lastSeen = time.Now()
 				deviceEntry.timesSeen++
 				s.devices.Store(dev.Address.String(), map[string]device{
 					dev.Address.String(): deviceEntry,
 				})
+				log.Printf("[DEBUG] Device %s updated - times seen: %d -> %d", dev.Address.String(), oldTimesSeen, deviceEntry.timesSeen)
 				continue
 			}
 			// if the device is new, add it to the map.
+			log.Printf("[DEBUG] Adding new device %s to tracking map", dev.Address.String())
 			s.devices.Store(dev.Address.String(), map[string]device{
 				dev.Address.String(): {
 					d:         dev,
@@ -225,17 +246,25 @@ func (s *scanner) startScan() {
 			})
 			// increment the count of devices.
 			s.count++
+			log.Printf("[DEBUG] Total unique devices tracked: %d", s.count)
 		// pass a list of devices to the writer.
 		case <-writeTrigger:
+			log.Printf("[DEBUG] Write trigger received, preparing device list")
 			sendList := s.sortAndPass()
 			sendList.scanCount = s.scanCount
+			log.Printf("[DEBUG] Sorted device list prepared - %d devices, scan count: %d", len(sendList.devices), sendList.scanCount)
+
 			// only send the list if it has changed.
 			if !areSlicesEqual(sendList.devices, lastSent) {
+				log.Printf("[DEBUG] Device list has changed, sending to writer")
 				lastSent = sendList.devices
 				s.ingPath <- sendList
+			} else {
+				log.Printf("[DEBUG] Device list unchanged, skipping write")
 			}
 		// start cleaning up the map of old devices.
 		case <-trimTicker.C:
+			log.Printf("[DEBUG] Trim ticker fired, cleaning up old devices")
 			s.TrimMap()
 		}
 
@@ -244,28 +273,40 @@ func (s *scanner) startScan() {
 
 // Boot-straping routine for the BLE scanner.
 func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
+	log.Printf("[DEBUG] Starting BLE scanner bootstrap routine")
 	d := new(sync.Map)
 	adapter := bluetooth.DefaultAdapter
+	log.Printf("[DEBUG] Attempting to enable Bluetooth adapter")
 	err := adapter.Enable()
 	if err != nil {
+		log.Printf("[DEBUG] Failed to enable Bluetooth adapter: %v", err)
 		return fmt.Errorf("failed to enable bluetooth adapter: %v", err)
 	}
+	log.Printf("[DEBUG] Bluetooth adapter enabled successfully")
+
 	scan := newScanner(wg, adapter, d, q)
 	scan.ingPath = ingPath
 	scan.start = time.Now()
+	log.Printf("[DEBUG] Scanner configured with ingest path, start time: %v", scan.start)
+
 	go func() {
 		// start scanning for devices
+		log.Printf("[DEBUG] Starting scanner in dedicated goroutine")
 		scan.startScan()
 	}()
+	log.Printf("[DEBUG] BLE scanner bootstrap completed successfully")
 	return nil
 }
 
 // cleans up stale devices from the map.
 func (s *scanner) TrimMap() {
+	log.Printf("[DEBUG] Starting device map trim operation")
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
 		for _, dv := range v.(map[string]device) {
-			if time.Since(dv.lastSeen) > oldestDevice {
+			timeSinceLastSeen := time.Since(dv.lastSeen)
+			if timeSinceLastSeen > oldestDevice {
+				log.Printf("[DEBUG] Removing stale device %s (last seen %v ago)", k, timeSinceLastSeen)
 				s.devices.Delete(k)
 				removed++
 			}
@@ -273,11 +314,12 @@ func (s *scanner) TrimMap() {
 		return true
 	})
 	s.count -= removed
+	log.Printf("[DEBUG] Trim operation completed - removed %d devices, total remaining: %d", removed, s.count)
 }
 
 // returns a sorted list of devices.
 func (s *scanner) sortAndPass() deviceList {
-
+	log.Printf("[DEBUG] Creating sorted device list")
 	sortedList := deviceList{}
 	s.devices.Range(func(k, v interface{}) bool {
 		for _, dv := range v.(map[string]device) {
@@ -285,35 +327,54 @@ func (s *scanner) sortAndPass() deviceList {
 		}
 		return true
 	})
+	log.Printf("[DEBUG] Collected %d devices for sorting", len(sortedList.devices))
 	sort.Sort(sortedList)
+	log.Printf("[DEBUG] Device list sorted successfully")
 	// return sorted list by device id
 	return sortedList
 }
 
 // compares and returns true if the two []devices slices are equal.
 func areSlicesEqual(listOne, listTwo []device) bool {
-	return reflect.DeepEqual(listOne, listTwo)
+	equal := reflect.DeepEqual(listOne, listTwo)
+	log.Printf("[DEBUG] Device list comparison result: %t", equal)
+	return equal
 }
 
 // Checks if a device is potentiall an Apple AirTag.
 func (d *device) isAppleAirTag() bool {
+	log.Printf("[DEBUG] Checking if device %s is Apple AirTag", d.d.Address.String())
 	if len(d.ManufacturerData()) == 0 {
+		log.Printf("[DEBUG] Device %s has no manufacturer data", d.d.Address.String())
 		return false
 	}
 	if val, ok := d.ManufacturerData()[uint16(appleIdentifier)]; ok {
+		log.Printf("[DEBUG] Device %s has Apple manufacturer data (length: %d)", d.d.Address.String(), len(val))
 		if len(val) > 0 {
 			// check if the first byte is a FindMy network broadcast ID. And the second byte is the correct payload length.
-			if bytes.Contains(findMy["payloadType"], val[0:1]) && bytes.Equal(findMy["payloadLength"], val[1:2]) {
+			hasCorrectType := bytes.Contains(findMy["payloadType"], val[0:1])
+			hasCorrectLength := bytes.Equal(findMy["payloadLength"], val[1:2])
+			log.Printf("[DEBUG] Device %s - correct type: %t, correct length: %t (first byte: 0x%02X)",
+				d.d.Address.String(), hasCorrectType, hasCorrectLength, val[0])
+			if hasCorrectType && hasCorrectLength {
+				log.Printf("[DEBUG] Device %s confirmed as Apple AirTag", d.d.Address.String())
 				return true
 			}
 		}
+	} else {
+		log.Printf("[DEBUG] Device %s does not have Apple manufacturer data", d.d.Address.String())
 	}
 	return false
 }
 
 // Returns true if the device is a registered apple air tag
 func (d device) isTrackingAirtag() bool {
-	if d.isRegistered() && d.isAppleAirTag() {
+	isRegistered := d.isRegistered()
+	isAirTag := d.isAppleAirTag()
+	log.Printf("[DEBUG] Device %s tracking check - registered: %t, AirTag: %t",
+		d.d.Address.String(), isRegistered, isAirTag)
+	if isRegistered && isAirTag {
+		log.Printf("[DEBUG] Device %s confirmed as tracking AirTag", d.d.Address.String())
 		return true
 	}
 	return false
@@ -321,12 +382,14 @@ func (d device) isTrackingAirtag() bool {
 
 // Checks if a device is potentially an Apple "FindMy" device.
 func (d *device) isFindMyDevice() bool {
+	log.Printf("[DEBUG] Checking if device %s is FindMy device", d.d.Address.String())
 	var findMy map[string][]byte = map[string][]byte{
 		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
 		"payloadLength": {AirTagPayloadLength},
 	}
 	// Check if the device is broadcasting any manufacterer specific data.
 	if len(d.ManufacturerData()) == 0 {
+		log.Printf("[DEBUG] Device %s has no manufacturer data for FindMy check", d.d.Address.String())
 		return false
 	}
 	// pulls Apple manufacturer data from the device.
@@ -334,17 +397,24 @@ func (d *device) isFindMyDevice() bool {
 		if len(val) > 0 {
 			// Looks for a "findMy" AD type.
 			if bytes.Contains(findMy["payloadType"], val[0:1]) {
+				log.Printf("[DEBUG] Device %s confirmed as FindMy device", d.d.Address.String())
 				return true
 			}
 		}
 	}
+	log.Printf("[DEBUG] Device %s is not a FindMy device", d.d.Address.String())
 	return false
 }
 
 // Check if AirTag is registered or unregistered.
 func (d device) isRegistered() bool {
+	log.Printf("[DEBUG] Checking registration status for device %s", d.d.Address.String())
 	if len(d.ManufacturerData()) == 0 || !d.isAppleAirTag() {
+		log.Printf("[DEBUG] Device %s cannot check registration - no data or not AirTag", d.d.Address.String())
 		return false
 	}
-	return d.ManufacturerData()[uint16(appleIdentifier)][0] != unregisteredFindMyDevice
+	isRegistered := d.ManufacturerData()[uint16(appleIdentifier)][0] != unregisteredFindMyDevice
+	log.Printf("[DEBUG] Device %s registration status: %t (first byte: 0x%02X)",
+		d.d.Address.String(), isRegistered, d.ManufacturerData()[uint16(appleIdentifier)][0])
+	return isRegistered
 }

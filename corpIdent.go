@@ -38,7 +38,9 @@ func ingestCorpDevices(loc string) CorpIdentMap {
 	// Open the file and read the contents.
 	file, err := os.Open(loc)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Warning: failed to open company identifiers file '%s': %v", loc, err)
+		log.Printf("Continuing with empty company identifier map. Manufacturers will show as 'Unknown'.")
+		return cmap
 	}
 	defer file.Close()
 	// Create a new YAML decoder.
@@ -49,12 +51,15 @@ func ingestCorpDevices(loc string) CorpIdentMap {
 	// Decode the file into the struct.
 	err = d.Decode(&c)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Warning: failed to decode company identifiers YAML: %v", err)
+		log.Printf("Continuing with empty company identifier map. Manufacturers will show as 'Unknown'.")
+		return cmap
 	}
 	// Convert YAML struct into a hashmap
 	for _, v := range c.CompanyIdentifiers {
 		cmap[v.Value] = v.Name
 	}
+	log.Printf("Loaded %d company identifiers from %s", len(cmap), loc)
 	return cmap
 }
 

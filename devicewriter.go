@@ -61,16 +61,19 @@ func (d *screenWriter) Write() {
 	if err != nil {
 		termHeight = 15
 	}
-	rowBuff := 5
+	const rowBuff = 5 // Header, separator, footer rows overhead
 	// fmt.Println("writer: writing devices to screen...")
 	d.ptab.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(d.dc.devices), d.dc.scanCount)})
 	d.ptab.SetStyle(table.StyleColoredBlackOnCyanWhite)
 	d.ptab.AppendSeparator()
 	d.ptab.AppendRow(d.header)
-	for _, v := range d.dc.devices[:min(len(d.dc.devices), termHeight-rowBuff)] {
+	// Calculate max devices to display, ensuring we don't panic on negative values
+	maxDevices := max(0, min(len(d.dc.devices), termHeight-rowBuff))
+	for _, v := range d.dc.devices[:maxDevices] {
 		PercentSeen := 0
 		if d.dc.scanCount > 0 {
-			PercentSeen = v.timesSeen * 100 / d.dc.scanCount
+			// Use float division to avoid integer overflow for long-running sessions
+			PercentSeen = int((float64(v.timesSeen) / float64(d.dc.scanCount)) * 100)
 		}
 		AirTag := ""
 		if v.isAppleAirTag() {

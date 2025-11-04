@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 // must is a helper function that wraps a call to a function returning an error and logs it if the error is non-nil.
@@ -28,7 +28,7 @@ func clearScreen() {
 }
 
 func getTerminalHeight() (int, error) {
-	_, height, err := terminal.GetSize(0)
+	_, height, err := term.GetSize(0)
 	if err != nil {
 		return 0, err
 	}

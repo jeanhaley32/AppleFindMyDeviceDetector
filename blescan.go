@@ -27,8 +27,7 @@ const (
 )
 
 var (
-	lastSent []device
-	findMy   map[string][]byte = map[string][]byte{
+	findMy map[string][]byte = map[string][]byte{
 		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
 		"payloadLength": {AirTagPayloadLength},
 	}
@@ -43,6 +42,7 @@ type scanner struct {
 	quit      chan any           // Channel to signal the scan to stop.
 	ingPath   ingestPath         // Channel to ingest the devices.
 	scanCount int                // The number of scans that have been performed.
+	lastSent  []device           // Last sent device list for change detection.
 }
 
 // device content
@@ -148,14 +148,14 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 	for {
 		// set a new timer to start scanning.
 		startScanTimer := time.NewTimer(scanRate)
-		defer startScanTimer.Stop()
 		select {
 		case <-s.quit:
+			startScanTimer.Stop()
 			s.wg.Done()
 			return
 		case <-startScanTimer.C: // start scanning for devices.
+			startScanTimer.Stop()
 			stopScanTimer := time.NewTimer(scanLength)
-			defer stopScanTimer.Stop()
 			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 				select {
 				case <-stopScanTimer.C:
@@ -167,6 +167,7 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 					returnPath <- device // pass the device back to the scanner.
 				}
 			})
+			stopScanTimer.Stop()
 			if err != nil {
 				log.Printf("failed to scan: %v\n", err)
 			}
@@ -195,7 +196,7 @@ func (s *scanner) startScan() {
 		case <-s.quit:
 			s.wg.Done()
 			return
-		// recieve devices from the scanner and store them in the map.
+		// receive devices from the scanner and store them in the map.
 		case dev := <-returnPath:
 			devicesEntry := device{
 				d: dev,
@@ -206,22 +207,18 @@ func (s *scanner) startScan() {
 			}
 			// if the device has been seen before, update the last seen time and increment the times seen.
 			if value, ok := s.devices.Load(dev.Address.String()); ok {
-				deviceEntry := value.(map[string]device)[dev.Address.String()]
+				deviceEntry := value.(device)
 				deviceEntry.lastSeen = time.Now()
 				deviceEntry.timesSeen++
-				s.devices.Store(dev.Address.String(), map[string]device{
-					dev.Address.String(): deviceEntry,
-				})
+				s.devices.Store(dev.Address.String(), deviceEntry)
 				continue
 			}
 			// if the device is new, add it to the map.
-			s.devices.Store(dev.Address.String(), map[string]device{
-				dev.Address.String(): {
-					d:         dev,
-					lastSeen:  time.Now(),
-					firstSeen: time.Now(),
-					timesSeen: 1,
-				},
+			s.devices.Store(dev.Address.String(), device{
+				d:         dev,
+				lastSeen:  time.Now(),
+				firstSeen: time.Now(),
+				timesSeen: 1,
 			})
 			// increment the count of devices.
 			s.count++
@@ -230,8 +227,8 @@ func (s *scanner) startScan() {
 			sendList := s.sortAndPass()
 			sendList.scanCount = s.scanCount
 			// only send the list if it has changed.
-			if !areSlicesEqual(sendList.devices, lastSent) {
-				lastSent = sendList.devices
+			if !areSlicesEqual(sendList.devices, s.lastSent) {
+				s.lastSent = sendList.devices
 				s.ingPath <- sendList
 			}
 		// start cleaning up the map of old devices.
@@ -264,11 +261,10 @@ func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
 func (s *scanner) TrimMap() {
 	removed := 0
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[string]device) {
-			if time.Since(dv.lastSeen) > oldestDevice {
-				s.devices.Delete(k)
-				removed++
-			}
+		dv := v.(device)
+		if time.Since(dv.lastSeen) > oldestDevice {
+			s.devices.Delete(k)
+			removed++
 		}
 		return true
 	})
@@ -280,9 +276,8 @@ func (s *scanner) sortAndPass() deviceList {
 
 	sortedList := deviceList{}
 	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[string]device) {
-			sortedList.devices = append(sortedList.devices, dv)
-		}
+		dv := v.(device)
+		sortedList.devices = append(sortedList.devices, dv)
 		return true
 	})
 	sort.Sort(sortedList)

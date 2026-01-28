@@ -60,7 +60,7 @@ var AppleProtocol = struct {
 
 // FindMy Payload Structure (25 bytes after type+length):
 //   Byte 0:     Status byte
-//               - Bit 2: "Maintained" (owner connected within 15 min rotation period)
+//               - Bit 3: "Maintained" (owner connected within 15 min rotation period)
 //               - Bits 6-7: Battery level (if maintained bit set)
 //   Bytes 1-22: Partial public key (bytes 6-27 of EC P-224 x-coordinate)
 //   Byte 23:    Public key bits (bits 6-7 of byte 0 of x-coordinate)
@@ -102,7 +102,7 @@ func (d *device) applePayloadLength() byte {
 
 // statusByte returns the status byte from FindMy payload (byte index 2), or 0 if not present.
 // Status byte contains:
-//   - Bit 2: "Maintained" flag (owner connected within 15 min key rotation period)
+//   - Bit 3: "Maintained" flag (owner connected within 15 min key rotation period)
 //   - Bits 6-7: Battery level (only valid if maintained bit is set)
 func (d *device) statusByte() byte {
 	payload := d.applePayload()
@@ -138,15 +138,15 @@ func (d *device) isNearbyMessage() bool {
 }
 
 // isOwnerNearby checks if an AirTag has the "maintained" bit set in status byte.
-// The maintained bit (bit 2) indicates the owner's device connected within the
+// The maintained bit (bit 3) indicates the owner's device connected within the
 // current 15-minute key rotation period.
 //
-// Note: This is a best-effort check. The status byte interpretation may vary.
+// Note: Bit position determined empirically (bit 3, not bit 2 as some docs suggest).
 func (d *device) isOwnerNearby() bool {
 	if !d.isAppleAirTag() {
 		return false
 	}
-	maintainedBit := (d.statusByte() >> 2) & 0x01
+	maintainedBit := (d.statusByte() >> 3) & 0x01
 	return maintainedBit == 1
 }
 

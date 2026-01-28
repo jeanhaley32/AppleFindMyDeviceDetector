@@ -11,12 +11,10 @@ import (
 )
 
 const (
-	scanRate       = 50 * time.Millisecond  // rate at which to scan for devices.
-	scanBufferSize = 500                    // buffer size for the scan channel.
-	scanLength     = 200 * time.Millisecond // length of time to scan for devices.
-	writeTime      = 10 * time.Second       // rate at which to write devices to the ingest path.
-	trimTime       = 1 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice   = 24 * time.Hour         // time to keep a device in the map.
+	scanBufferSize  = 500              // buffer size for discovered devices channel.
+	displayInterval = 10 * time.Second // how often to refresh the display.
+	cleanupInterval = 1 * time.Second  // how often to remove stale devices.
+	deviceRetention = 24 * time.Hour   // how long to keep a device in memory.
 )
 
 // DeviceFilter is a function that returns true if the device should be included.
@@ -89,22 +87,45 @@ func (d *device) passesFilters() bool {
 }
 
 type scanner struct {
-	wg          *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
-	adapter     *bluetooth.Adapter // The Bluetooth adapter for scanning.
-	devices     *sync.Map          // Thread-safe map of discovered devices.
-	deviceCount int                // Number of unique devices found.
-	startTime   time.Time          // When scanning started.
-	quit        chan any           // Channel to signal shutdown.
-	outputChan  DeviceChannel      // Channel to send device lists to writer.
-	scanCount   int                // Number of scan cycles completed.
+	wg           *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
+	adapter      *bluetooth.Adapter // The Bluetooth adapter for scanning.
+	devices      *sync.Map          // Thread-safe map of discovered devices.
+	deviceCount  int                // Number of unique devices found.
+	startTime    time.Time          // When scanning started.
+	quit         chan any           // Channel to signal shutdown.
+	outputChan   DeviceChannel      // Channel to send device lists to writer.
+	refreshCount int                // Number of display refreshes (for stats).
+	paused       bool               // Whether scanning is paused.
+	pauseChan    chan bool          // Channel to signal pause/resume.
+}
+
+// Global scanner instance for interactive mode control
+var activeScanner *scanner
+
+// PauseScanning stops the BLE scan temporarily
+func PauseScanning() {
+	if activeScanner != nil && !activeScanner.paused {
+		activeScanner.adapter.StopScan()
+		activeScanner.paused = true
+	}
+}
+
+// ResumeScanning restarts the BLE scan
+func ResumeScanning() {
+	if activeScanner != nil && activeScanner.paused {
+		activeScanner.paused = false
+		go activeScanner.runContinuousScan(make(chan bluetooth.ScanResult, scanBufferSize))
+	}
 }
 
 // device wraps a BLE scan result with tracking metadata.
 type device struct {
-	scanResult bluetooth.ScanResult
-	lastSeen   time.Time
-	firstSeen  time.Time
-	timesSeen  int
+	scanResult      bluetooth.ScanResult
+	lastSeen        time.Time
+	firstSeen       time.Time
+	timesSeen       int // total BLE packets received
+	refreshesSeen   int // number of refresh cycles device was seen in
+	lastRefreshSeen int // last refresh cycle this device was seen in
 }
 
 // time since first seen
@@ -122,10 +143,10 @@ func (d device) detectedFor() time.Duration {
 	return d.lastSeen.Sub(d.firstSeen)
 }
 
-// list of devices
+// deviceList holds a snapshot of devices for display.
 type deviceList struct {
-	devices   []device
-	scanCount int
+	devices      []device
+	refreshCount int
 }
 
 // returns the length of the list
@@ -162,9 +183,14 @@ func (d device) LastSeen() time.Time {
 	return d.lastSeen
 }
 
-// Returns the number of times the device was seen.
+// Returns the number of times the device was seen (BLE packets).
 func (d device) TimesSeen() int {
 	return d.timesSeen
+}
+
+// Returns the number of refresh cycles the device was seen in.
+func (d device) RefreshesSeen() int {
+	return d.refreshesSeen
 }
 
 // Returns the underlying BLE scan result.
@@ -196,34 +222,19 @@ func (d device) CompanyID() uint16 {
 	return extractCompanyID(d.ManufacturerData())
 }
 
-// scan continuously discovers BLE devices and sends them to discoveredDevices channel.
-func (s *scanner) scan(discoveredDevices chan bluetooth.ScanResult, displayRefresh chan any) {
-	s.scanCount = 0
-	for {
-		scanDelayTimer := time.NewTimer(scanRate)
+// runContinuousScan starts the BLE scan and forwards discovered devices to the channel.
+// This function blocks until the adapter stops scanning (via StopScan).
+func (s *scanner) runContinuousScan(discovered chan<- bluetooth.ScanResult) {
+	err := s.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
 		select {
-		case <-s.quit:
-			scanDelayTimer.Stop()
-			s.wg.Done()
-			return
-		case <-scanDelayTimer.C:
-			scanDurationTimer := time.NewTimer(scanLength)
-			err := s.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
-				select {
-				case <-scanDurationTimer.C:
-					s.scanCount++
-					displayRefresh <- nil
-					adapter.StopScan()
-					return
-				default:
-					discoveredDevices <- result
-				}
-			})
-			scanDurationTimer.Stop()
-			if err != nil {
-				log.Printf("failed to scan: %v\n", err)
-			}
+		case discovered <- result:
+			// Device sent to processing channel
+		default:
+			// Channel full - silently drop to avoid blocking the BLE stack
 		}
+	})
+	if err != nil {
+		log.Printf("scan error: %v\n", err)
 	}
 }
 
@@ -232,56 +243,31 @@ func newScanner(wg *sync.WaitGroup, adapter *bluetooth.Adapter, devices *sync.Ma
 	return &scanner{wg: wg, adapter: adapter, devices: devices, quit: quit}
 }
 
-// startScan is the primary event loop for the scanner.
-// It receives discovered devices, stores them, periodically cleans stale entries,
-// and sends sorted snapshots to the display writer.
-func (s *scanner) startScan() {
-	s.deviceCount = 0
-	discoveredDevices := make(chan bluetooth.ScanResult, scanBufferSize)
-	displayRefresh := make(chan any, 1)
-	cleanupTicker := time.NewTicker(trimTime)
-	go s.scan(discoveredDevices, displayRefresh)
+// run is the main event loop for the scanner.
+// It processes discovered devices, refreshes the display periodically,
+// and cleans up stale entries.
+func (s *scanner) run() {
+	discovered := make(chan bluetooth.ScanResult, scanBufferSize)
+	displayTicker := time.NewTicker(displayInterval)
+	cleanupTicker := time.NewTicker(cleanupInterval)
+
+	// Start continuous BLE scan in background
+	go s.runContinuousScan(discovered)
 
 	for {
 		select {
 		case <-s.quit:
+			s.adapter.StopScan()
+			displayTicker.Stop()
+			cleanupTicker.Stop()
 			s.wg.Done()
 			return
 
-		case result := <-discoveredDevices:
-			discovered := device{scanResult: result}
+		case result := <-discovered:
+			s.processDevice(result)
 
-			// Apply active filters - skip if device doesn't pass.
-			if !discovered.passesFilters() {
-				continue
-			}
-
-			addr := result.Address.String()
-
-			// Update existing device or add new one.
-			if existing, ok := s.devices.Load(addr); ok {
-				entry := existing.(map[string]device)[addr]
-				entry.lastSeen = time.Now()
-				entry.timesSeen++
-				s.devices.Store(addr, map[string]device{addr: entry})
-				continue
-			}
-
-			// New device - add to map.
-			s.devices.Store(addr, map[string]device{
-				addr: {
-					scanResult: result,
-					lastSeen:   time.Now(),
-					firstSeen:  time.Now(),
-					timesSeen:  1,
-				},
-			})
-			s.deviceCount++
-
-		case <-displayRefresh:
-			snapshot := s.getSortedDevices()
-			snapshot.scanCount = s.scanCount
-			s.outputChan <- snapshot
+		case <-displayTicker.C:
+			s.refreshDisplay()
 
 		case <-cleanupTicker.C:
 			s.removeStaleDevices()
@@ -289,19 +275,79 @@ func (s *scanner) startScan() {
 	}
 }
 
+// DeviceCallback is called when a new device is discovered (for interactive mode)
+var DeviceCallback func(address bluetooth.Address)
+
+// processDevice handles a newly discovered BLE device.
+func (s *scanner) processDevice(result bluetooth.ScanResult) {
+	dev := device{scanResult: result}
+
+	// Apply active filters
+	if !dev.passesFilters() {
+		return
+	}
+
+	addr := result.Address.String()
+
+	// Register with interactive controller if callback is set
+	if DeviceCallback != nil {
+		DeviceCallback(result.Address)
+	}
+
+	// Update existing device or add new one
+	if existing, ok := s.devices.Load(addr); ok {
+		entry := existing.(map[string]device)[addr]
+		entry.scanResult = result // Update with latest BLE data (status byte, etc.)
+		entry.lastSeen = time.Now()
+		entry.timesSeen++
+		// Track if this is a new refresh cycle
+		if entry.lastRefreshSeen < s.refreshCount {
+			entry.refreshesSeen++
+			entry.lastRefreshSeen = s.refreshCount
+		}
+		s.devices.Store(addr, map[string]device{addr: entry})
+		return
+	}
+
+	// New device
+	s.devices.Store(addr, map[string]device{
+		addr: {
+			scanResult:      result,
+			lastSeen:        time.Now(),
+			firstSeen:       time.Now(),
+			timesSeen:       1,
+			refreshesSeen:   1,
+			lastRefreshSeen: s.refreshCount,
+		},
+	})
+	s.deviceCount++
+}
+
+// refreshDisplay sends the current device list to the display writer.
+func (s *scanner) refreshDisplay() {
+	s.refreshCount++
+	snapshot := s.getSortedDevices()
+	snapshot.refreshCount = s.refreshCount
+	s.outputChan <- snapshot
+}
+
 // startBleScanner initializes and starts the BLE scanner.
 func startBleScanner(wg *sync.WaitGroup, output DeviceChannel, quit chan any) error {
-	deviceMap := new(sync.Map)
 	adapter := bluetooth.DefaultAdapter
 	if err := adapter.Enable(); err != nil {
 		return fmt.Errorf("failed to enable bluetooth adapter: %v", err)
 	}
+	return startBleScannerWithAdapter(wg, adapter, output, quit)
+}
 
-	bleScanner := newScanner(wg, adapter, deviceMap, quit)
-	bleScanner.outputChan = output
-	bleScanner.startTime = time.Now()
+// startBleScannerWithAdapter starts the BLE scanner with a pre-enabled adapter.
+func startBleScannerWithAdapter(wg *sync.WaitGroup, adapter *bluetooth.Adapter, output DeviceChannel, quit chan any) error {
+	s := newScanner(wg, adapter, new(sync.Map), quit)
+	s.outputChan = output
+	s.startTime = time.Now()
+	activeScanner = s // Set global for interactive mode control
 
-	go bleScanner.startScan()
+	go s.run()
 	return nil
 }
 
@@ -310,7 +356,7 @@ func (s *scanner) removeStaleDevices() {
 	removedCount := 0
 	s.devices.Range(func(key, value interface{}) bool {
 		for _, dev := range value.(map[string]device) {
-			if time.Since(dev.lastSeen) > oldestDevice {
+			if time.Since(dev.lastSeen) > deviceRetention {
 				s.devices.Delete(key)
 				removedCount++
 			}

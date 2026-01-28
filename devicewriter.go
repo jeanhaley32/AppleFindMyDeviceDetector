@@ -11,7 +11,8 @@ import (
 )
 
 var (
-	header = table.Row{"Dev ID", "Manufacturer", "Manufacturer Data", "AirTag", "AirPods", "Owner Near", "Battery", "First:Last:Delta", "Times Seen", "% Seen"}
+	header            = table.Row{"Dev ID", "Manufacturer", "Manufacturer Data", "AirTag", "AirPods", "Status", "Owner Near", "Battery", "First:Last:Delta", "Packets", "% Seen"}
+	headerInteractive = table.Row{"Dev ID", "AirTag", "AirPods", "Owner Near", "Battery", "Connected"}
 )
 
 type screenWriter struct {
@@ -66,13 +67,17 @@ func (w *screenWriter) render() {
 	}
 	reservedRows := 5
 
-	w.table.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(w.devices.devices), w.devices.scanCount)})
+	// Interactive mode uses simplified display
+	if interactiveController != nil {
+		w.renderInteractive(termWidth, termHeight, reservedRows)
+		return
+	}
+
+	// Normal mode
+	headerText := fmt.Sprintf("Unique Devices: %v | Refreshes: %v", len(w.devices.devices), w.devices.refreshCount)
+	w.table.AppendHeader(table.Row{headerText})
 	w.table.SetStyle(table.StyleColoredBlackOnCyanWhite)
-
-	// Prevent word wrapping by setting allowed row length to terminal width
 	w.table.SetAllowedRowLength(termWidth)
-
-	// Hide empty columns and suppress trailing spaces
 	w.table.SuppressEmptyColumns()
 	w.table.SuppressTrailingSpaces()
 
@@ -82,8 +87,8 @@ func (w *screenWriter) render() {
 	maxRows := min(len(w.devices.devices), termHeight-reservedRows)
 	for _, dev := range w.devices.devices[:maxRows] {
 		percentSeen := 0
-		if w.devices.scanCount > 0 {
-			percentSeen = dev.timesSeen * 100 / w.devices.scanCount
+		if w.devices.refreshCount > 0 {
+			percentSeen = dev.RefreshesSeen() * 100 / w.devices.refreshCount
 		}
 
 		isAirTag := ""
@@ -95,6 +100,8 @@ func (w *screenWriter) render() {
 		if dev.isAirPods() {
 			isAirPods = "*"
 		}
+
+		statusByte := fmt.Sprintf("0x%02X", dev.statusByte())
 
 		ownerNearby := ""
 		if dev.isOwnerNearby() {
@@ -118,6 +125,7 @@ func (w *screenWriter) render() {
 				fmt.Sprintf("%v: %v", hexBytes, len(hexBytes)),
 				isAirTag,
 				isAirPods,
+				statusByte,
 				ownerNearby,
 				batteryLevel,
 				fmt.Sprintf("%v:%v:%v",
@@ -137,8 +145,9 @@ func (w *screenWriter) render() {
 		{Number: 3, WidthMax: 40, WidthMaxEnforcer: text.Trim}, // Manufacturer Data - truncate if too long
 		{Number: 4, Align: text.AlignCenter},                   // AirTag
 		{Number: 5, Align: text.AlignCenter},                   // AirPods
-		{Number: 6, Align: text.AlignCenter},                   // Owner Near
-		{Number: 7, Align: text.AlignCenter},                   // Battery
+		{Number: 6, Align: text.AlignCenter},                   // Status
+		{Number: 7, Align: text.AlignCenter},                   // Owner Near
+		{Number: 8, Align: text.AlignCenter},                   // Battery
 	})
 
 	w.table.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})
@@ -147,6 +156,81 @@ func (w *screenWriter) render() {
 	// // Render the table.
 	w.table.Render()
 	// Reset the rows in the table.
+	w.table.ResetRows()
+	w.table.ResetFooters()
+	w.table.ResetHeaders()
+}
+
+// renderInteractive draws a simplified table for interactive mode
+func (w *screenWriter) renderInteractive(termWidth, termHeight, reservedRows int) {
+	_, ok, testing, failed := interactiveController.GetConnectionStats()
+	mode := interactiveController.GetMode()
+
+	var headerText string
+	if mode == ModeScan {
+		headerText = fmt.Sprintf("AirTag Tracker [SCANNING] | Devices: %d | [s]=scan [c]=connect",
+			len(w.devices.devices))
+	} else {
+		soundState := "OFF"
+		if interactiveController.IsSoundPlaying() {
+			soundState = "ON"
+		}
+		headerText = fmt.Sprintf("AirTag Tracker [CONNECT] | %d ok / %d testing / %d fail | Sound: %s | [s]=scan [c]=connect [Enter]=sound",
+			ok, testing, failed, soundState)
+	}
+
+	w.table.AppendHeader(table.Row{headerText})
+	w.table.SetStyle(table.StyleColoredBlackOnCyanWhite)
+	w.table.SetAllowedRowLength(termWidth)
+	w.table.SuppressEmptyColumns()
+	w.table.SuppressTrailingSpaces()
+
+	w.table.AppendSeparator()
+	w.table.AppendRow(headerInteractive)
+
+	maxRows := min(len(w.devices.devices), termHeight-reservedRows)
+	for _, dev := range w.devices.devices[:maxRows] {
+		isAirTag := ""
+		if dev.isAppleAirTag() {
+			isAirTag = "*"
+		}
+
+		isAirPods := ""
+		if dev.isAirPods() {
+			isAirPods = "*"
+		}
+
+		ownerNearby := ""
+		if dev.isOwnerNearby() {
+			ownerNearby = "*"
+		}
+
+		batteryLevel := dev.getBatteryLevel()
+
+		// Get connection status from interactive controller
+		connStatus := interactiveController.GetDeviceStatus(dev.scanResult.Address.String())
+
+		w.table.AppendRow(table.Row{
+			dev.scanResult.Address.String(),
+			isAirTag,
+			isAirPods,
+			ownerNearby,
+			batteryLevel,
+			connStatus,
+		})
+	}
+
+	w.table.SetColumnConfigs([]table.ColumnConfig{
+		{Number: 2, Align: text.AlignCenter}, // AirTag
+		{Number: 3, Align: text.AlignCenter}, // AirPods
+		{Number: 4, Align: text.AlignCenter}, // Owner Near
+		{Number: 5, Align: text.AlignCenter}, // Battery
+		{Number: 6, Align: text.AlignCenter}, // Connected
+	})
+
+	w.table.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})
+	clearTerminal()
+	w.table.Render()
 	w.table.ResetRows()
 	w.table.ResetFooters()
 	w.table.ResetHeaders()

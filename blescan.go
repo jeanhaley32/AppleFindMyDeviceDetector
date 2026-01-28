@@ -42,7 +42,7 @@ var (
 
 	// FilterAppleDevice passes any device with Apple manufacturer data (0x004C).
 	FilterAppleDevice DeviceFilter = func(d *device) bool {
-		return d.isAppleDevice()
+		return d.hasAppleData()
 	}
 
 	// FilterAirPods passes Apple AirPods (type=0x07).
@@ -89,22 +89,22 @@ func (d *device) passesFilters() bool {
 }
 
 type scanner struct {
-	wg        *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
-	adptr     *bluetooth.Adapter // The adapter to use for scanning.
-	devices   *sync.Map          // The map to store the devices.
-	count     int                // The number of devices found.
-	start     time.Time          // The time the scan started.
-	quit      chan any           // Channel to signal the scan to stop.
-	ingPath   ingestPath         // Channel to ingest the devices.
-	scanCount int                // The number of scans that have been performed.
+	wg          *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
+	adapter     *bluetooth.Adapter // The Bluetooth adapter for scanning.
+	devices     *sync.Map          // Thread-safe map of discovered devices.
+	deviceCount int                // Number of unique devices found.
+	startTime   time.Time          // When scanning started.
+	quit        chan any           // Channel to signal shutdown.
+	outputChan  DeviceChannel      // Channel to send device lists to writer.
+	scanCount   int                // Number of scan cycles completed.
 }
 
-// device content
+// device wraps a BLE scan result with tracking metadata.
 type device struct {
-	d         bluetooth.ScanResult
-	lastSeen  time.Time
-	firstSeen time.Time
-	timesSeen int
+	scanResult bluetooth.ScanResult
+	lastSeen   time.Time
+	firstSeen  time.Time
+	timesSeen  int
 }
 
 // time since first seen
@@ -146,11 +146,11 @@ func (d deviceList) Swap(i, j int) {
 	d.devices[i], d.devices[j] = d.devices[j], d.devices[i]
 }
 
-// store for bluetooth device Manufacturer specific data
-type manData map[uint16][]byte
+// ManufacturerData maps company IDs to their payload bytes.
+type ManufacturerData map[uint16][]byte
 
-// ingestion path for devices.
-type ingestPath chan deviceList
+// DeviceChannel is used to pass device lists between scanner and writer.
+type DeviceChannel chan deviceList
 
 // Returns the first time the device was seen.
 func (d device) FirstSeen() time.Time {
@@ -167,60 +167,59 @@ func (d device) TimesSeen() int {
 	return d.timesSeen
 }
 
-// Returns the device.
-func (d device) Device() bluetooth.ScanResult {
-	return d.d
+// Returns the underlying BLE scan result.
+func (d device) ScanResult() bluetooth.ScanResult {
+	return d.scanResult
 }
 
 // Returns the device address.
 func (d device) Address() bluetooth.Address {
-	return d.d.Address
+	return d.scanResult.Address
 }
 
 // Returns the device address as a string.
 func (d device) AddressString() string {
-	return d.d.Address.String()
+	return d.scanResult.Address.String()
 }
 
 func (d device) ManufacturerData() map[uint16][]byte {
-	return d.d.ManufacturerData()
+	return d.scanResult.ManufacturerData()
 }
 
 // returns the device's local name.
 func (d device) LocalName() string {
-	return d.d.LocalName()
+	return d.scanResult.LocalName()
 }
 
-// returns the device's company uint16 identifier.
-func (d device) CompanyIdent() uint16 {
-	return getCompanyIdent(d.ManufacturerData())
+// CompanyID returns the Bluetooth company identifier from manufacturer data.
+func (d device) CompanyID() uint16 {
+	return extractCompanyID(d.ManufacturerData())
 }
 
-// Active scanner. scans for new devices and passes them back down it's return path.
-func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan any) {
+// scan continuously discovers BLE devices and sends them to discoveredDevices channel.
+func (s *scanner) scan(discoveredDevices chan bluetooth.ScanResult, displayRefresh chan any) {
 	s.scanCount = 0
 	for {
-		// set a new timer to start scanning.
-		startScanTimer := time.NewTimer(scanRate)
+		scanDelayTimer := time.NewTimer(scanRate)
 		select {
 		case <-s.quit:
-			startScanTimer.Stop()
+			scanDelayTimer.Stop()
 			s.wg.Done()
 			return
-		case <-startScanTimer.C: // start scanning for devices.
-			stopScanTimer := time.NewTimer(scanLength)
-			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
+		case <-scanDelayTimer.C:
+			scanDurationTimer := time.NewTimer(scanLength)
+			err := s.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
 				select {
-				case <-stopScanTimer.C:
+				case <-scanDurationTimer.C:
 					s.scanCount++
-					writeTrigger <- interface{}(nil)
+					displayRefresh <- nil
 					adapter.StopScan()
 					return
 				default:
-					returnPath <- device // pass the device back to the scanner.
+					discoveredDevices <- result
 				}
 			})
-			stopScanTimer.Stop()
+			scanDurationTimer.Stop()
 			if err != nil {
 				log.Printf("failed to scan: %v\n", err)
 			}
@@ -228,115 +227,110 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 	}
 }
 
-// returns a new scan devices.
-func newScanner(wg *sync.WaitGroup, adptr *bluetooth.Adapter, devices *sync.Map, q chan any) *scanner {
-	return &scanner{wg: wg, adptr: adptr, devices: devices, quit: q}
+// newScanner creates a new BLE scanner instance.
+func newScanner(wg *sync.WaitGroup, adapter *bluetooth.Adapter, devices *sync.Map, quit chan any) *scanner {
+	return &scanner{wg: wg, adapter: adapter, devices: devices, quit: quit}
 }
 
-// Primary operation block of the scanner.
-// Starts the scanner, listens for devices on the return path, stores them in map
-// periodically cleans up the map, and passes a sorted list of devices to the writer.
+// startScan is the primary event loop for the scanner.
+// It receives discovered devices, stores them, periodically cleans stale entries,
+// and sends sorted snapshots to the display writer.
 func (s *scanner) startScan() {
-	s.count = 0
-	returnPath := make(chan bluetooth.ScanResult, scanBufferSize)
-	writeTrigger := make(chan any, 1)
-	trimTicker := time.NewTicker(trimTime)
-	go s.scan(returnPath, writeTrigger)
+	s.deviceCount = 0
+	discoveredDevices := make(chan bluetooth.ScanResult, scanBufferSize)
+	displayRefresh := make(chan any, 1)
+	cleanupTicker := time.NewTicker(trimTime)
+	go s.scan(discoveredDevices, displayRefresh)
+
 	for {
 		select {
-		// check for the signal to stop scanning.
 		case <-s.quit:
 			s.wg.Done()
 			return
-		// recieve devices from the scanner and store them in the map.
-		case dev := <-returnPath:
-			devicesEntry := device{
-				d: dev,
-			}
-			// apply active filters - skip if device doesn't pass.
-			if !devicesEntry.passesFilters() {
+
+		case result := <-discoveredDevices:
+			discovered := device{scanResult: result}
+
+			// Apply active filters - skip if device doesn't pass.
+			if !discovered.passesFilters() {
 				continue
 			}
-			// if the device has been seen before, update the last seen time and increment the times seen.
-			if value, ok := s.devices.Load(dev.Address.String()); ok {
-				deviceEntry := value.(map[string]device)[dev.Address.String()]
-				deviceEntry.lastSeen = time.Now()
-				deviceEntry.timesSeen++
-				s.devices.Store(dev.Address.String(), map[string]device{
-					dev.Address.String(): deviceEntry,
-				})
+
+			addr := result.Address.String()
+
+			// Update existing device or add new one.
+			if existing, ok := s.devices.Load(addr); ok {
+				entry := existing.(map[string]device)[addr]
+				entry.lastSeen = time.Now()
+				entry.timesSeen++
+				s.devices.Store(addr, map[string]device{addr: entry})
 				continue
 			}
-			// if the device is new, add it to the map.
-			s.devices.Store(dev.Address.String(), map[string]device{
-				dev.Address.String(): {
-					d:         dev,
-					lastSeen:  time.Now(),
-					firstSeen: time.Now(),
-					timesSeen: 1,
+
+			// New device - add to map.
+			s.devices.Store(addr, map[string]device{
+				addr: {
+					scanResult: result,
+					lastSeen:   time.Now(),
+					firstSeen:  time.Now(),
+					timesSeen:  1,
 				},
 			})
-			// increment the count of devices.
-			s.count++
-		// pass a list of devices to the writer.
-		case <-writeTrigger:
-			sendList := s.sortAndPass()
-			sendList.scanCount = s.scanCount
-			s.ingPath <- sendList
-		// start cleaning up the map of old devices.
-		case <-trimTicker.C:
-			s.TrimMap()
-		}
+			s.deviceCount++
 
+		case <-displayRefresh:
+			snapshot := s.getSortedDevices()
+			snapshot.scanCount = s.scanCount
+			s.outputChan <- snapshot
+
+		case <-cleanupTicker.C:
+			s.removeStaleDevices()
+		}
 	}
 }
 
-// Boot-straping routine for the BLE scanner.
-func startBleScanner(wg *sync.WaitGroup, ingPath ingestPath, q chan any) error {
-	d := new(sync.Map)
+// startBleScanner initializes and starts the BLE scanner.
+func startBleScanner(wg *sync.WaitGroup, output DeviceChannel, quit chan any) error {
+	deviceMap := new(sync.Map)
 	adapter := bluetooth.DefaultAdapter
-	err := adapter.Enable()
-	if err != nil {
+	if err := adapter.Enable(); err != nil {
 		return fmt.Errorf("failed to enable bluetooth adapter: %v", err)
 	}
-	scan := newScanner(wg, adapter, d, q)
-	scan.ingPath = ingPath
-	scan.start = time.Now()
-	go func() {
-		// start scanning for devices
-		scan.startScan()
-	}()
+
+	bleScanner := newScanner(wg, adapter, deviceMap, quit)
+	bleScanner.outputChan = output
+	bleScanner.startTime = time.Now()
+
+	go bleScanner.startScan()
 	return nil
 }
 
-// cleans up stale devices from the map.
-func (s *scanner) TrimMap() {
-	removed := 0
-	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[string]device) {
-			if time.Since(dv.lastSeen) > oldestDevice {
-				s.devices.Delete(k)
-				removed++
+// removeStaleDevices cleans up devices not seen within the retention period.
+func (s *scanner) removeStaleDevices() {
+	removedCount := 0
+	s.devices.Range(func(key, value interface{}) bool {
+		for _, dev := range value.(map[string]device) {
+			if time.Since(dev.lastSeen) > oldestDevice {
+				s.devices.Delete(key)
+				removedCount++
 			}
 		}
 		return true
 	})
-	s.count -= removed
+	s.deviceCount -= removedCount
 }
 
-// returns a sorted list of devices.
-func (s *scanner) sortAndPass() deviceList {
-
-	sortedList := deviceList{}
-	s.devices.Range(func(k, v interface{}) bool {
-		for _, dv := range v.(map[string]device) {
-			sortedList.devices = append(sortedList.devices, dv)
+// getSortedDevices returns all devices sorted by detection duration (longest first).
+func (s *scanner) getSortedDevices() deviceList {
+	sorted := deviceList{}
+	s.devices.Range(func(key, value interface{}) bool {
+		for _, dev := range value.(map[string]device) {
+			sorted.devices = append(sorted.devices, dev)
 		}
 		return true
 	})
-	sort.Sort(sortedList)
-	// return sorted list by device id
-	return sortedList
+	sort.Sort(sorted)
+	return sorted
 }
 
 

@@ -68,44 +68,44 @@ var AppleProtocol = struct {
 //
 // Note: The remaining 6 bytes of the public key are encoded in the BLE MAC address.
 
-// isAppleDevice checks if the device has Apple manufacturer data.
-func (d *device) isAppleDevice() bool {
+// hasAppleData checks if the device has Apple manufacturer data.
+func (d *device) hasAppleData() bool {
 	_, ok := d.ManufacturerData()[AppleProtocol.CompanyID]
 	return ok
 }
 
-// getApplePayload returns the Apple manufacturer data payload, or nil if not present.
-func (d *device) getApplePayload() []byte {
+// applePayload returns the Apple manufacturer data payload, or nil if not present.
+func (d *device) applePayload() []byte {
 	if payload, ok := d.ManufacturerData()[AppleProtocol.CompanyID]; ok {
 		return payload
 	}
 	return nil
 }
 
-// getApplePayloadType returns the type byte from Apple manufacturer data, or 0 if not present.
-func (d *device) getApplePayloadType() byte {
-	payload := d.getApplePayload()
+// applePayloadType returns the type byte from Apple manufacturer data, or 0 if not present.
+func (d *device) applePayloadType() byte {
+	payload := d.applePayload()
 	if len(payload) < 1 {
 		return 0
 	}
 	return payload[0]
 }
 
-// getApplePayloadLength returns the length byte from Apple manufacturer data, or 0 if not present.
-func (d *device) getApplePayloadLength() byte {
-	payload := d.getApplePayload()
+// applePayloadLength returns the length byte from Apple manufacturer data, or 0 if not present.
+func (d *device) applePayloadLength() byte {
+	payload := d.applePayload()
 	if len(payload) < 2 {
 		return 0
 	}
 	return payload[1]
 }
 
-// getStatusByte returns the status byte from FindMy payload (byte index 2), or 0 if not present.
+// statusByte returns the status byte from FindMy payload (byte index 2), or 0 if not present.
 // Status byte contains:
 //   - Bit 2: "Maintained" flag (owner connected within 15 min key rotation period)
 //   - Bits 6-7: Battery level (only valid if maintained bit is set)
-func (d *device) getStatusByte() byte {
-	payload := d.getApplePayload()
+func (d *device) statusByte() byte {
+	payload := d.applePayload()
 	if len(payload) < 3 {
 		return 0
 	}
@@ -115,31 +115,26 @@ func (d *device) getStatusByte() byte {
 // isAppleAirTag checks if a device matches the Apple AirTag/FindMy payload signature.
 // Looks for: type=0x12 (FindMy) and length=0x19 (25 bytes).
 func (d *device) isAppleAirTag() bool {
-	payloadType := d.getApplePayloadType()
-	payloadLength := d.getApplePayloadLength()
-
-	isFindMyType := payloadType == AppleProtocol.FindMyType
-	isCorrectLength := payloadLength == AppleProtocol.FindMyPayloadLength
-
-	return isFindMyType && isCorrectLength
+	return d.applePayloadType() == AppleProtocol.FindMyType &&
+		d.applePayloadLength() == AppleProtocol.FindMyPayloadLength
 }
 
 // isFindMyDevice checks if a device is broadcasting on the Apple FindMy network.
 // This checks for type=0x12 which indicates FindMy network participation.
 func (d *device) isFindMyDevice() bool {
-	return d.getApplePayloadType() == AppleProtocol.FindMyType
+	return d.applePayloadType() == AppleProtocol.FindMyType
 }
 
 // isAirPods checks if a device is Apple AirPods.
 // AirPods use type=0x07 (previously misidentified as unregistered AirTag).
 func (d *device) isAirPods() bool {
-	return d.getApplePayloadType() == AppleProtocol.AirPodsType
+	return d.applePayloadType() == AppleProtocol.AirPodsType
 }
 
 // isNearbyMessage checks if a device is broadcasting Apple Nearby messages.
 // Nearby messages (type=0x10) indicate device state (locked, active, calling, etc.)
 func (d *device) isNearbyMessage() bool {
-	return d.getApplePayloadType() == AppleProtocol.NearbyType
+	return d.applePayloadType() == AppleProtocol.NearbyType
 }
 
 // isOwnerNearby checks if an AirTag has the "maintained" bit set in status byte.
@@ -151,29 +146,23 @@ func (d *device) isOwnerNearby() bool {
 	if !d.isAppleAirTag() {
 		return false
 	}
-	// Check maintained bit (bit 2) in status byte
-	statusByte := d.getStatusByte()
-	maintainedBit := (statusByte >> 2) & 0x01
+	maintainedBit := (d.statusByte() >> 2) & 0x01
 	return maintainedBit == 1
 }
 
 // getBatteryLevel returns the battery level from the status byte.
 // Battery level is encoded in bits 6-7 (only valid if maintained bit is set).
 //
-// Returns: "Full", "Medium", "Low", "Critical", or "Unknown"
+// Returns: "Full", "Med", "Low", "Crit", or "?"
 func (d *device) getBatteryLevel() string {
 	if !d.isAppleAirTag() {
 		return ""
 	}
-
-	// Battery level only valid if maintained bit is set
 	if !d.isOwnerNearby() {
 		return "?"
 	}
 
-	statusByte := d.getStatusByte()
-	batteryBits := (statusByte >> 6) & 0x03
-
+	batteryBits := (d.statusByte() >> 6) & 0x03
 	switch batteryBits {
 	case 0:
 		return "Full"

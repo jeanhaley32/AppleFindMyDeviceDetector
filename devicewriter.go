@@ -15,120 +15,139 @@ var (
 )
 
 type screenWriter struct {
-	wg       *sync.WaitGroup
-	ptab     table.Writer
-	header   table.Row
-	quit     chan any
-	readPath ingestPath
-	dc       deviceList
+	wg         *sync.WaitGroup
+	table      table.Writer
+	header     table.Row
+	quit       chan any
+	inputChan  DeviceChannel
+	devices    deviceList
 }
 
-func newWriter(wg *sync.WaitGroup, f *os.File, header table.Row, q chan any, r ingestPath) *screenWriter {
-	ptab := table.NewWriter()
-	ptab.SetTitle("Apple FindMy Devices")
-	ptab.SetOutputMirror(f)
+func newWriter(wg *sync.WaitGroup, output *os.File, header table.Row, quit chan any, input DeviceChannel) *screenWriter {
+	tableWriter := table.NewWriter()
+	tableWriter.SetTitle("Apple FindMy Devices")
+	tableWriter.SetOutputMirror(output)
 	return &screenWriter{
-		wg:       wg,
-		ptab:     ptab,
-		header:   header,
-		readPath: r,
-		quit:     q,
+		wg:        wg,
+		table:     tableWriter,
+		header:    header,
+		inputChan: input,
+		quit:      quit,
 	}
 }
 
-func startWriter(wg *sync.WaitGroup, q chan any, f *os.File, header table.Row, readp ingestPath) error {
-	// create a new writer
-	w := newWriter(wg, f, header, q, readp)
-	go w.execute()
+func startWriter(wg *sync.WaitGroup, quit chan any, output *os.File, header table.Row, input DeviceChannel) error {
+	writer := newWriter(wg, output, header, quit, input)
+	go writer.execute()
 	return nil
 }
 
-func (d *screenWriter) execute() {
+func (w *screenWriter) execute() {
 	for {
 		select {
-		case <-d.quit:
-			d.wg.Done()
+		case <-w.quit:
+			w.wg.Done()
 			return
-		case devices := <-d.readPath:
-			d.dc = devices
-			d.Write()
+		case deviceList := <-w.inputChan:
+			w.devices = deviceList
+			w.render()
 		}
 	}
 }
 
-func (d *screenWriter) Write() {
-	termHeight, err := getTerminalHeight()
+// render draws the device table to the terminal.
+func (w *screenWriter) render() {
+	termWidth, termHeight, err := getTerminalSize()
 	if err != nil || termHeight < 10 {
 		termHeight = 15
 	}
-	rowBuff := 5
-	// fmt.Println("writer: writing devices to screen...")
-	d.ptab.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(d.dc.devices), d.dc.scanCount)})
-	d.ptab.SetStyle(table.StyleColoredBlackOnCyanWhite)
-	d.ptab.AppendSeparator()
-	d.ptab.AppendRow(d.header)
-	for _, v := range d.dc.devices[:min(len(d.dc.devices), termHeight-rowBuff)] {
-		PercentSeen := 0
-		if d.dc.scanCount > 0 {
-			PercentSeen = v.timesSeen * 100 / d.dc.scanCount
+	if err != nil || termWidth < 80 {
+		termWidth = 120
+	}
+	reservedRows := 5
+
+	w.table.AppendHeader(table.Row{fmt.Sprintf("Unique Apple FindMy Devices: %v Scan Loops: %v", len(w.devices.devices), w.devices.scanCount)})
+	w.table.SetStyle(table.StyleColoredBlackOnCyanWhite)
+
+	// Prevent word wrapping by setting allowed row length to terminal width
+	w.table.SetAllowedRowLength(termWidth)
+
+	// Hide empty columns and suppress trailing spaces
+	w.table.SuppressEmptyColumns()
+	w.table.SuppressTrailingSpaces()
+
+	w.table.AppendSeparator()
+	w.table.AppendRow(w.header)
+
+	maxRows := min(len(w.devices.devices), termHeight-reservedRows)
+	for _, dev := range w.devices.devices[:maxRows] {
+		percentSeen := 0
+		if w.devices.scanCount > 0 {
+			percentSeen = dev.timesSeen * 100 / w.devices.scanCount
 		}
-		AirTag := ""
-		if v.isAppleAirTag() {
-			AirTag = "*"
+
+		isAirTag := ""
+		if dev.isAppleAirTag() {
+			isAirTag = "*"
 		}
-		AirPods := ""
-		if v.isAirPods() {
-			AirPods = "*"
+
+		isAirPods := ""
+		if dev.isAirPods() {
+			isAirPods = "*"
 		}
-		ownerNear := ""
-		if v.isOwnerNearby() {
-			ownerNear = "*"
+
+		ownerNearby := ""
+		if dev.isOwnerNearby() {
+			ownerNearby = "*"
 		}
-		battery := v.getBatteryLevel()
-		var vlist []string
-		for _, b := range v.ManufacturerData() {
-			if len(b) > 0 {
-				for _, i := range b {
-					vlist = append(vlist, fmt.Sprintf("%X", i))
+
+		batteryLevel := dev.getBatteryLevel()
+
+		var hexBytes []string
+		for _, payload := range dev.ManufacturerData() {
+			if len(payload) > 0 {
+				for _, b := range payload {
+					hexBytes = append(hexBytes, fmt.Sprintf("%X", b))
 				}
 			} else {
-				d.ptab.AppendRow(table.Row{"None"})
+				w.table.AppendRow(table.Row{"None"})
 			}
-			d.ptab.AppendRow(table.Row{
-				fmt.Sprintf("%v", v.d.Address.String()),
-				fmt.Sprintf("%v", resolveCompanyIdent(&cmap, v.CompanyIdent())),
-				fmt.Sprintf("%v: %v", vlist, len(vlist)),
-				AirTag,
-				AirPods,
-				ownerNear,
-				battery,
+			w.table.AppendRow(table.Row{
+				dev.scanResult.Address.String(),
+				getCompanyName(&companyNames, dev.CompanyID()),
+				fmt.Sprintf("%v: %v", hexBytes, len(hexBytes)),
+				isAirTag,
+				isAirPods,
+				ownerNearby,
+				batteryLevel,
 				fmt.Sprintf("%v:%v:%v",
-					v.sinceFirstSeen().Round(time.Second),
-					v.sinceLastSeen().Round(time.Second),
-					v.detectedFor().Round(time.Second),
+					dev.sinceFirstSeen().Round(time.Second),
+					dev.sinceLastSeen().Round(time.Second),
+					dev.detectedFor().Round(time.Second),
 				),
-				v.TimesSeen(),
-				fmt.Sprintf("%v%%", PercentSeen),
+				dev.TimesSeen(),
+				fmt.Sprintf("%v%%", percentSeen),
 			})
 		}
 	}
-	d.ptab.AppendRow(table.Row{
+	w.table.AppendRow(table.Row{
 		"...",
 	})
-	d.ptab.SetColumnConfigs([]table.ColumnConfig{
-		{Number: 4, Align: text.AlignCenter}, // AirTag
-		{Number: 5, Align: text.AlignCenter}, // AirPods
-		{Number: 6, Align: text.AlignCenter}, // Owner Near
-		{Number: 7, Align: text.AlignCenter}, // Battery
+	w.table.SetColumnConfigs([]table.ColumnConfig{
+		{Number: 3, WidthMax: 40, WidthMaxEnforcer: text.Trim}, // Manufacturer Data - truncate if too long
+		{Number: 4, Align: text.AlignCenter},                   // AirTag
+		{Number: 5, Align: text.AlignCenter},                   // AirPods
+		{Number: 6, Align: text.AlignCenter},                   // Owner Near
+		{Number: 7, Align: text.AlignCenter},                   // Battery
 	})
 
-	d.ptab.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})
+	w.table.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})
 	// clears the screen.
-	clearScreen()
+	clearTerminal()
 	// // Render the table.
-	d.ptab.Render()
+	w.table.Render()
 	// Reset the rows in the table.
-	d.ptab.ResetRows()
-	d.ptab.ResetFooters()
-	d.ptab.ResetHeaders()
+	w.table.ResetRows()
+	w.table.ResetFooters()
+	w.table.ResetHeaders()
 }

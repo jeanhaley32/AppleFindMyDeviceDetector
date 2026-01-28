@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	cmap     = make(CorpIdentMap)
-	noFilter = flag.Bool("no-filter", false, "disable all device filters (show all BLE devices)")
+	companyNames = make(CompanyIdentifiers)
+	noFilter     = flag.Bool("no-filter", false, "disable all device filters (show all BLE devices)")
 )
 
 func main() {
@@ -19,30 +19,22 @@ func main() {
 		SetFilters(FilterNone)
 	}
 
-	cmap = ingestCorpDevices(companyIdentlocation)
-	ingp := make(ingestPath)
+	companyNames = loadCompanyIdentifiers(companyIdentifiersFile)
+	deviceChan := make(DeviceChannel)
 	wg := sync.WaitGroup{}
-	// start the scanner in a go routine.
+
 	wg.Add(2)
+
 	go func() {
-		// create a new scanner'
-		err := startBleScanner(
-			&wg,
-			ingp,
-			make(chan any),
-		)
-		must("Failed to start BlueTooth Scanner", err)
+		err := startBleScanner(&wg, deviceChan, make(chan any))
+		mustSucceed("start Bluetooth scanner", err)
 	}()
+
 	go func() {
-		// start the writer
-		err := startWriter(
-			&wg, make(chan any),
-			os.Stdout,
-			header,
-			ingp,
-		)
-		must("Failed to start writer", err)
+		err := startWriter(&wg, make(chan any), os.Stdout, header, deviceChan)
+		mustSucceed("start display writer", err)
 	}()
+
 	wg.Wait()
 	log.Printf("Scanner and writer have finished.")
 }

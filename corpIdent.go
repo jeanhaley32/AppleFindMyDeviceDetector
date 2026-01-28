@@ -7,62 +7,55 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-// map to hold the company identifiers.
-type CorpIdentMap map[uint16]string
+// CompanyIdentifiers maps Bluetooth company IDs to company names.
+type CompanyIdentifiers map[uint16]string
 
 const (
-	companyIdentlocation = "company_identifiers.yaml"
+	companyIdentifiersFile = "company_identifiers.yaml"
 )
 
-// resolve coporate identity into a string
-func resolveCompanyIdent(c *CorpIdentMap, t uint16) string {
-	if val, ok := (*c)[t]; ok {
-		return val
+// getCompanyName looks up a company name by its Bluetooth company ID.
+func getCompanyName(identifiers *CompanyIdentifiers, companyID uint16) string {
+	if name, ok := (*identifiers)[companyID]; ok {
+		return name
 	}
 	return "Unknown"
 }
 
-// converts YAML list into a hashmap of Corporate identifiers
-func ingestCorpDevices(loc string) CorpIdentMap {
-	cmap = make(CorpIdentMap)
-	// define a map to hold individual company identifiers.
-	type CompanyIdentifier struct {
+// loadCompanyIdentifiers reads company identifiers from a YAML file into a map.
+func loadCompanyIdentifiers(filePath string) CompanyIdentifiers {
+	identifiers := make(CompanyIdentifiers)
+
+	type companyEntry struct {
 		Value uint16 `yaml:"value"`
 		Name  string `yaml:"name"`
 	}
-	// define a struct to the top level company identifiers list.
-	type CompanyIdentifiers struct {
-		CompanyIdentifiers []CompanyIdentifier `yaml:"company_identifiers"`
+	type companyFile struct {
+		CompanyIdentifiers []companyEntry `yaml:"company_identifiers"`
 	}
 
-	// Open the file and read the contents.
-	file, err := os.Open(loc)
+	file, err := os.Open(filePath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer file.Close()
-	// Create a new YAML decoder.
-	d := yaml.NewDecoder(file)
-	// Create a new struct to hold the unmarshaled data.
-	var c CompanyIdentifiers
 
-	// Decode the file into the struct.
-	err = d.Decode(&c)
-	if err != nil {
+	decoder := yaml.NewDecoder(file)
+	var data companyFile
+	if err := decoder.Decode(&data); err != nil {
 		log.Fatal(err)
 	}
-	// Convert YAML struct into a hashmap
-	for _, v := range c.CompanyIdentifiers {
-		cmap[v.Value] = v.Name
+
+	for _, company := range data.CompanyIdentifiers {
+		identifiers[company.Value] = company.Name
 	}
-	return cmap
+	return identifiers
 }
 
-func getCompanyIdent(md manData) uint16 {
-	if len(md) > 0 {
-		for manId := range md {
-			return manId
-		}
+// extractCompanyID returns the first company ID found in manufacturer data.
+func extractCompanyID(mfrData ManufacturerData) uint16 {
+	for companyID := range mfrData {
+		return companyID
 	}
 	return 0
 }

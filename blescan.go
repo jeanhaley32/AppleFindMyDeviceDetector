@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"log"
-	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -13,26 +11,82 @@ import (
 )
 
 const (
-	scanRate                 = 50 * time.Millisecond  // rate at which to scan for devices.
-	scanBufferSize           = 500                    // buffer size for the scan channel.
-	scanLength               = 200 * time.Millisecond // length of time to scan for devices.
-	writeTime                = 10 * time.Second       // rate at which to write devices to the ingest path.
-	trimTime                 = 1 * time.Second        // rate at which to trim the map of old devices.
-	oldestDevice             = 24 * time.Hour         // time to keep a device in the map.
-	adManSpecData            = byte(0xFF)             // 0xFF is the AD type for manufacturer specific data.
-	appleIdentifier          = byte(0x004C)           // 0x004C is the company identifier for Apple.
-	findMyNetworkBroadcastID = byte(0x12)             // 0x12 is the broadcast ID for the FindMy network.
-	unregisteredFindMyDevice = byte(0x07)             // 0x07 is the broadcast ID for the FindMy network broadcast by an unregistered airtag.
-	AirTagPayloadLength      = byte(0x19)             // 0x19 is the length of the AirTag payload.
+	scanRate       = 50 * time.Millisecond  // rate at which to scan for devices.
+	scanBufferSize = 500                    // buffer size for the scan channel.
+	scanLength     = 200 * time.Millisecond // length of time to scan for devices.
+	writeTime      = 10 * time.Second       // rate at which to write devices to the ingest path.
+	trimTime       = 1 * time.Second        // rate at which to trim the map of old devices.
+	oldestDevice   = 24 * time.Hour         // time to keep a device in the map.
 )
 
+// DeviceFilter is a function that returns true if the device should be included.
+type DeviceFilter func(*device) bool
+
+// Available filters - each returns true if the device passes the filter.
 var (
-	lastSent []device
-	findMy   map[string][]byte = map[string][]byte{
-		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
-		"payloadLength": {AirTagPayloadLength},
+	// FilterAppleAirTag passes devices matching AirTag signature (type=0x12, len=0x19).
+	FilterAppleAirTag DeviceFilter = func(d *device) bool {
+		return d.isAppleAirTag()
+	}
+
+	// FilterOwnerNearby passes AirTags with "maintained" bit set in status byte.
+	// Note: This checks if owner connected within 15-min key rotation period.
+	FilterOwnerNearby DeviceFilter = func(d *device) bool {
+		return d.isOwnerNearby()
+	}
+
+	// FilterFindMyDevice passes any device with FindMy type byte (0x12).
+	FilterFindMyDevice DeviceFilter = func(d *device) bool {
+		return d.isFindMyDevice()
+	}
+
+	// FilterAppleDevice passes any device with Apple manufacturer data (0x004C).
+	FilterAppleDevice DeviceFilter = func(d *device) bool {
+		return d.isAppleDevice()
+	}
+
+	// FilterAirPods passes Apple AirPods (type=0x07).
+	FilterAirPods DeviceFilter = func(d *device) bool {
+		return d.isAirPods()
+	}
+
+	// FilterHasManufacturerData passes devices broadcasting any manufacturer data.
+	FilterHasManufacturerData DeviceFilter = func(d *device) bool {
+		return len(d.ManufacturerData()) > 0
+	}
+
+	// FilterNone passes all devices (no filtering).
+	FilterNone DeviceFilter = func(d *device) bool {
+		return true
 	}
 )
+
+// activeFilters defines which filters are applied to incoming devices.
+// A device must pass ALL filters to be stored. Comment/uncomment to toggle.
+var activeFilters = []DeviceFilter{
+	FilterAppleAirTag, // type=0x12, len=0x19
+	// FilterOwnerNearby,      // status byte "maintained" bit (owner nearby)
+	// FilterFindMyDevice,     // any FindMy type (0x12)
+	// FilterAppleDevice,      // any Apple device (0x004C)
+	// FilterAirPods,          // AirPods only (0x07)
+	// FilterHasManufacturerData,
+	// FilterNone,
+}
+
+// SetFilters replaces the active filters with the provided filters.
+func SetFilters(filters ...DeviceFilter) {
+	activeFilters = filters
+}
+
+// passesFilters returns true if the device passes all active filters.
+func (d *device) passesFilters() bool {
+	for _, filter := range activeFilters {
+		if !filter(d) {
+			return false
+		}
+	}
+	return true
+}
 
 type scanner struct {
 	wg        *sync.WaitGroup    // WaitGroup to wait for the scan to finish.
@@ -148,14 +202,13 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 	for {
 		// set a new timer to start scanning.
 		startScanTimer := time.NewTimer(scanRate)
-		defer startScanTimer.Stop()
 		select {
 		case <-s.quit:
+			startScanTimer.Stop()
 			s.wg.Done()
 			return
 		case <-startScanTimer.C: // start scanning for devices.
 			stopScanTimer := time.NewTimer(scanLength)
-			defer stopScanTimer.Stop()
 			err := s.adptr.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 				select {
 				case <-stopScanTimer.C:
@@ -167,10 +220,10 @@ func (s *scanner) scan(returnPath chan bluetooth.ScanResult, writeTrigger chan a
 					returnPath <- device // pass the device back to the scanner.
 				}
 			})
+			stopScanTimer.Stop()
 			if err != nil {
 				log.Printf("failed to scan: %v\n", err)
 			}
-
 		}
 	}
 }
@@ -200,8 +253,8 @@ func (s *scanner) startScan() {
 			devicesEntry := device{
 				d: dev,
 			}
-			// if the device is not an Apple FindMy device, skip it.
-			if !devicesEntry.isTrackingAirtag() {
+			// apply active filters - skip if device doesn't pass.
+			if !devicesEntry.passesFilters() {
 				continue
 			}
 			// if the device has been seen before, update the last seen time and increment the times seen.
@@ -229,11 +282,7 @@ func (s *scanner) startScan() {
 		case <-writeTrigger:
 			sendList := s.sortAndPass()
 			sendList.scanCount = s.scanCount
-			// only send the list if it has changed.
-			if !areSlicesEqual(sendList.devices, lastSent) {
-				lastSent = sendList.devices
-				s.ingPath <- sendList
-			}
+			s.ingPath <- sendList
 		// start cleaning up the map of old devices.
 		case <-trimTicker.C:
 			s.TrimMap()
@@ -290,61 +339,4 @@ func (s *scanner) sortAndPass() deviceList {
 	return sortedList
 }
 
-// compares and returns true if the two []devices slices are equal.
-func areSlicesEqual(listOne, listTwo []device) bool {
-	return reflect.DeepEqual(listOne, listTwo)
-}
 
-// Checks if a device is potentiall an Apple AirTag.
-func (d *device) isAppleAirTag() bool {
-	if len(d.ManufacturerData()) == 0 {
-		return false
-	}
-	if val, ok := d.ManufacturerData()[uint16(appleIdentifier)]; ok {
-		if len(val) > 0 {
-			// check if the first byte is a FindMy network broadcast ID. And the second byte is the correct payload length.
-			if bytes.Contains(findMy["payloadType"], val[0:1]) && bytes.Equal(findMy["payloadLength"], val[1:2]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// Returns true if the device is a registered apple air tag
-func (d device) isTrackingAirtag() bool {
-	if d.isRegistered() && d.isAppleAirTag() {
-		return true
-	}
-	return false
-}
-
-// Checks if a device is potentially an Apple "FindMy" device.
-func (d *device) isFindMyDevice() bool {
-	var findMy map[string][]byte = map[string][]byte{
-		"payloadType":   {unregisteredFindMyDevice, findMyNetworkBroadcastID},
-		"payloadLength": {AirTagPayloadLength},
-	}
-	// Check if the device is broadcasting any manufacterer specific data.
-	if len(d.ManufacturerData()) == 0 {
-		return false
-	}
-	// pulls Apple manufacturer data from the device.
-	if val, ok := d.ManufacturerData()[uint16(appleIdentifier)]; ok {
-		if len(val) > 0 {
-			// Looks for a "findMy" AD type.
-			if bytes.Contains(findMy["payloadType"], val[0:1]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// Check if AirTag is registered or unregistered.
-func (d device) isRegistered() bool {
-	if len(d.ManufacturerData()) == 0 || !d.isAppleAirTag() {
-		return false
-	}
-	return d.ManufacturerData()[uint16(appleIdentifier)][0] != unregisteredFindMyDevice
-}

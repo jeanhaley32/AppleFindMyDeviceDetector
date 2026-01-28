@@ -1,16 +1,24 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 	"sync"
 )
 
 var (
-	cmap = make(CorpIdentMap)
+	cmap     = make(CorpIdentMap)
+	noFilter = flag.Bool("no-filter", false, "disable all device filters (show all BLE devices)")
 )
 
 func main() {
+	flag.Parse()
+
+	if *noFilter {
+		SetFilters(FilterNone)
+	}
+
 	cmap = ingestCorpDevices(companyIdentlocation)
 	ingp := make(ingestPath)
 	wg := sync.WaitGroup{}

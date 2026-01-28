@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	header = table.Row{"Dev ID", "Manufacturer", "Manufacturer Data", "AirTag", "registered", "First:Last:Delta", "Times Seen", "Percent Seen"}
+	header = table.Row{"Dev ID", "Manufacturer", "Manufacturer Data", "AirTag", "AirPods", "Owner Near", "Battery", "First:Last:Delta", "Times Seen", "% Seen"}
 )
 
 type screenWriter struct {
@@ -58,7 +58,7 @@ func (d *screenWriter) execute() {
 
 func (d *screenWriter) Write() {
 	termHeight, err := getTerminalHeight()
-	if err != nil {
+	if err != nil || termHeight < 10 {
 		termHeight = 15
 	}
 	rowBuff := 5
@@ -76,10 +76,15 @@ func (d *screenWriter) Write() {
 		if v.isAppleAirTag() {
 			AirTag = "*"
 		}
-		registered := ""
-		if v.isRegistered() {
-			registered = "*"
+		AirPods := ""
+		if v.isAirPods() {
+			AirPods = "*"
 		}
+		ownerNear := ""
+		if v.isOwnerNearby() {
+			ownerNear = "*"
+		}
+		battery := v.getBatteryLevel()
 		var vlist []string
 		for _, b := range v.ManufacturerData() {
 			if len(b) > 0 {
@@ -90,12 +95,13 @@ func (d *screenWriter) Write() {
 				d.ptab.AppendRow(table.Row{"None"})
 			}
 			d.ptab.AppendRow(table.Row{
-				// fmt.Sprintf("...%X", v.AddressString()[len(v.AddressString())-8:]),
 				fmt.Sprintf("%v", v.d.Address.String()),
 				fmt.Sprintf("%v", resolveCompanyIdent(&cmap, v.CompanyIdent())),
-				fmt.Sprintf("%v: %v", vlist, len(vlist)), //vlist[:min(len(vlist)/2, 4)], len(vlist)
+				fmt.Sprintf("%v: %v", vlist, len(vlist)),
 				AirTag,
-				registered,
+				AirPods,
+				ownerNear,
+				battery,
 				fmt.Sprintf("%v:%v:%v",
 					v.sinceFirstSeen().Round(time.Second),
 					v.sinceLastSeen().Round(time.Second),
@@ -110,8 +116,10 @@ func (d *screenWriter) Write() {
 		"...",
 	})
 	d.ptab.SetColumnConfigs([]table.ColumnConfig{
-		{Number: 4, Align: text.AlignCenter},
-		{Number: 5, Align: text.AlignCenter},
+		{Number: 4, Align: text.AlignCenter}, // AirTag
+		{Number: 5, Align: text.AlignCenter}, // AirPods
+		{Number: 6, Align: text.AlignCenter}, // Owner Near
+		{Number: 7, Align: text.AlignCenter}, // Battery
 	})
 
 	d.ptab.AppendFooter(table.Row{fmt.Sprintf("Last Updated: %v", time.Now().Format("2006-01-02 15:04:05"))})

@@ -19,3 +19,9 @@
 
 # Go workspace file
 go.work
+
+# OS/editor junk
+.DS_Store
+
+# Compiled binary
+/airtagtracker

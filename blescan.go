@@ -332,5 +332,3 @@ func (s *scanner) getSortedDevices() deviceList {
 	sort.Sort(sorted)
 	return sorted
 }
-
-

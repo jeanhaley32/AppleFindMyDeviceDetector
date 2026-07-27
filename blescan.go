@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tinygo.org/x/bluetooth"
@@ -96,7 +97,7 @@ type scanner struct {
 	startTime   time.Time          // When scanning started.
 	quit        chan any           // Channel to signal shutdown.
 	outputChan  DeviceChannel      // Channel to send device lists to writer.
-	scanCount   int                // Number of scan cycles completed.
+	scanCount   atomic.Int64       // Number of scan cycles completed. Written by scan(), read by startScan() - must stay atomic.
 }
 
 // device wraps a BLE scan result with tracking metadata.
@@ -198,7 +199,7 @@ func (d device) CompanyID() uint16 {
 
 // scan continuously discovers BLE devices and sends them to discoveredDevices channel.
 func (s *scanner) scan(discoveredDevices chan bluetooth.ScanResult, displayRefresh chan any) {
-	s.scanCount = 0
+	s.scanCount.Store(0)
 	for {
 		scanDelayTimer := time.NewTimer(scanRate)
 		select {
@@ -211,7 +212,7 @@ func (s *scanner) scan(discoveredDevices chan bluetooth.ScanResult, displayRefre
 			err := s.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
 				select {
 				case <-scanDurationTimer.C:
-					s.scanCount++
+					s.scanCount.Add(1)
 					displayRefresh <- nil
 					adapter.StopScan()
 					return
@@ -280,7 +281,7 @@ func (s *scanner) startScan() {
 
 		case <-displayRefresh:
 			snapshot := s.getSortedDevices()
-			snapshot.scanCount = s.scanCount
+			snapshot.scanCount = int(s.scanCount.Load())
 			s.outputChan <- snapshot
 
 		case <-cleanupTicker.C:

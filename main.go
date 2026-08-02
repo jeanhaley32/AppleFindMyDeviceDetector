@@ -4,7 +4,9 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 )
 
 var (
@@ -23,16 +25,30 @@ func main() {
 	deviceChan := make(DeviceChannel)
 	wg := sync.WaitGroup{}
 
-	wg.Add(2)
+	scannerQuit := make(chan any)
+	writerQuit := make(chan any)
+
+	// 3 goroutines call wg.Done(): scanner.scan(), scanner.startScan()
+	// (both share scannerQuit), and writer.execute() (writerQuit).
+	wg.Add(3)
 
 	go func() {
-		err := startBleScanner(&wg, deviceChan, make(chan any))
+		err := startBleScanner(&wg, deviceChan, scannerQuit)
 		mustSucceed("start Bluetooth scanner", err)
 	}()
 
 	go func() {
-		err := startWriter(&wg, make(chan any), os.Stdout, header, deviceChan)
+		err := startWriter(&wg, writerQuit, os.Stdout, header, deviceChan)
 		mustSucceed("start display writer", err)
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		log.Printf("Shutting down...")
+		close(scannerQuit)
+		close(writerQuit)
 	}()
 
 	wg.Wait()

@@ -15,12 +15,12 @@ var (
 )
 
 type screenWriter struct {
-	wg         *sync.WaitGroup
-	table      table.Writer
-	header     table.Row
-	quit       chan any
-	inputChan  DeviceChannel
-	devices    deviceList
+	wg        *sync.WaitGroup
+	table     table.Writer
+	header    table.Row
+	quit      chan any
+	inputChan DeviceChannel
+	devices   deviceList
 }
 
 func newWriter(wg *sync.WaitGroup, output *os.File, header table.Row, quit chan any, input DeviceChannel) *screenWriter {
@@ -103,14 +103,14 @@ func (w *screenWriter) render() {
 
 		batteryLevel := dev.getBatteryLevel()
 
-		var hexBytes []string
 		for _, payload := range dev.ManufacturerData() {
-			if len(payload) > 0 {
-				for _, b := range payload {
-					hexBytes = append(hexBytes, fmt.Sprintf("%X", b))
-				}
-			} else {
+			if len(payload) == 0 {
 				w.table.AppendRow(table.Row{"None"})
+				continue
+			}
+			var hexBytes []string
+			for _, b := range payload {
+				hexBytes = append(hexBytes, fmt.Sprintf("%X", b))
 			}
 			w.table.AppendRow(table.Row{
 				dev.scanResult.Address.String(),

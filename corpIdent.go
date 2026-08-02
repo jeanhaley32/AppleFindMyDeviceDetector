@@ -52,10 +52,25 @@ func loadCompanyIdentifiers(filePath string) CompanyIdentifiers {
 	return identifiers
 }
 
-// extractCompanyID returns the first company ID found in manufacturer data.
+const appleCompanyID uint16 = 0x004C
+
+// extractCompanyID returns a deterministic company ID from manufacturer data:
+// Apple's ID if present (this tool is Apple-device focused), otherwise the
+// lowest ID. Map iteration order is randomized, so picking "the first" key
+// by ranging (the old behavior) flickered between entries on every render
+// for devices broadcasting more than one manufacturer-data entry.
 func extractCompanyID(mfrData ManufacturerData) uint16 {
-	for companyID := range mfrData {
-		return companyID
+	if _, ok := mfrData[appleCompanyID]; ok {
+		return appleCompanyID
 	}
-	return 0
+
+	first := true
+	var lowest uint16
+	for companyID := range mfrData {
+		if first || companyID < lowest {
+			lowest = companyID
+			first = false
+		}
+	}
+	return lowest
 }

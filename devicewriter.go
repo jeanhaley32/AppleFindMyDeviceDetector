@@ -55,6 +55,40 @@ func (w *screenWriter) execute() {
 	}
 }
 
+// manufacturerCell is one rendered manufacturer-data entry: the company that
+// owns THIS entry's company ID paired with THIS entry's payload bytes.
+type manufacturerCell struct {
+	company string
+	data    string
+}
+
+// manufacturerCells produces one cell per manufacturer-data entry, pairing each
+// entry's own company ID with its own payload. Two bugs this guards against:
+//   - the company label must come from the entry's map key, not the device-wide
+//     CompanyID() (which is Apple-preferred) — otherwise a non-Apple entry gets
+//     mislabeled "Apple Inc." while showing its own (non-Apple) hex payload.
+//   - an empty payload still yields a full data cell ("(none)"), so the caller
+//     builds a full-width table row instead of a single-column one that would
+//     misalign under the header.
+func manufacturerCells(md map[uint16][]byte, names *CompanyIdentifiers) []manufacturerCell {
+	cells := make([]manufacturerCell, 0, len(md))
+	for companyID, payload := range md {
+		data := "(none)"
+		if len(payload) > 0 {
+			hexBytes := make([]string, 0, len(payload))
+			for _, b := range payload {
+				hexBytes = append(hexBytes, fmt.Sprintf("%X", b))
+			}
+			data = fmt.Sprintf("%v: %v", hexBytes, len(hexBytes))
+		}
+		cells = append(cells, manufacturerCell{
+			company: getCompanyName(names, companyID),
+			data:    data,
+		})
+	}
+	return cells
+}
+
 // render draws the device table to the terminal.
 func (w *screenWriter) render() {
 	termWidth, termHeight, err := getTerminalSize()
@@ -103,19 +137,11 @@ func (w *screenWriter) render() {
 
 		batteryLevel := dev.getBatteryLevel()
 
-		for _, payload := range dev.ManufacturerData() {
-			if len(payload) == 0 {
-				w.table.AppendRow(table.Row{"None"})
-				continue
-			}
-			var hexBytes []string
-			for _, b := range payload {
-				hexBytes = append(hexBytes, fmt.Sprintf("%X", b))
-			}
+		for _, cell := range manufacturerCells(dev.ManufacturerData(), &companyNames) {
 			w.table.AppendRow(table.Row{
 				dev.scanResult.Address.String(),
-				getCompanyName(&companyNames, dev.CompanyID()),
-				fmt.Sprintf("%v: %v", hexBytes, len(hexBytes)),
+				cell.company,
+				cell.data,
 				isAirTag,
 				isAirPods,
 				ownerNearby,
